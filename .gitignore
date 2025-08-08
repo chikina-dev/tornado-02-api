@@ -1,0 +1,15 @@
+# Environment variables
+.env
+
+# Python
+.python-version
+.venv/
+__pycache__/
+*.pyc
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
