@@ -14,6 +14,8 @@ dependencies = [
     "passlib[bcrypt]>=1.7.4",
     "python-dotenv>=1.0.0",
     "psycopg2-binary>=2.9.10",
+    # Added for test environment (SQLite async driver)
+    "aiosqlite>=0.20.0",
 ]
 
 [dependency-groups]
@@ -21,4 +23,8 @@ dev = [
     "pytest>=8.4.1",
     "pytest-cov>=6.2.1",
     "ruff>=0.12.8",
+    "pytest-asyncio>=0.23.8",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

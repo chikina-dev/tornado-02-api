@@ -1,22 +1,26 @@
 from fastapi import FastAPI
+from contextlib import asynccontextmanager
 from database import database
-from routers import users, uploads, data, test
+from routers import users, uploads, data, test, tags as tags_router
 import uvicorn
 
-app = FastAPI()
-
-@app.on_event("startup")
-async def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
     await database.connect()
+    try:
+        yield
+    finally:
+        # Shutdown
+        await database.disconnect()
 
-@app.on_event("shutdown")
-async def shutdown():
-    await database.disconnect()
+app = FastAPI(lifespan=lifespan)
 
 app.include_router(users.router)
 app.include_router(uploads.router)
 app.include_router(data.router)
 app.include_router(test.router)
+app.include_router(tags_router.router)
 
 @app.get("/")
 async def root():
