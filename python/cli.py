@@ -29,6 +29,9 @@ import pytesseract
 from pypdf import PdfReader
 
 from llm_core import call_llm_summarize
+from google.cloud import vision
+import io
+import markdown
 
 # -------- 共通ユーティリティ --------
 IMG_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp'}
@@ -82,14 +85,41 @@ def build_requests_session() -> requests.Session:
 HTTP = build_requests_session()
 
 # -------- コンテンツ抽出 --------
-def ocr_image(path: Path, tesseract_cmd: Optional[str] = None, lang: str = "jpn+eng") -> str:
-    if tesseract_cmd: pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
-    try:
-        with Image.open(path) as im:
-            return pytesseract.image_to_string(im, lang=lang)
-    except Exception as e:
-        print(f"[WARN] OCR失敗: {path} ({e})")
-        return ""
+def ocr_image(path: Path, tesseract_cmd: Optional[str] = None, lang: str = "jpn+eng", google_credentials_path: Optional[str] = None) -> str:
+    if google_credentials_path:
+        # Google Cloud Vision APIを使用
+        try:
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = google_credentials_path
+            client = vision.ImageAnnotatorClient()
+
+            with io.open(path, 'rb') as image_file:
+                content = image_file.read()
+
+            image = vision.Image(content=content)
+            response = client.text_detection(image=image)
+            texts = response.text_annotations
+
+            if texts:
+                # 最初のテキストアノテーションが全体のテキスト
+                return texts[0].description
+            else:
+                return ""
+        except Exception as e:
+            print(f"[WARN] Google Cloud Vision API OCR失敗: {path} ({e})")
+            return ""
+    else:
+        # Tesseract OCRを使用 (フォールバックまたはデフォルト)
+        if tesseract_cmd: pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
+        try:
+            # 手書き文字認識の精度向上のため、PSMとOEMを設定
+            # 最適な設定は画像によって異なるため、必要に応じて調整してください。
+            # 例: --psm 6 (単一の均一なテキストブロック) --oem 3 (LSTMとレガシーエンジンの両方)
+            config = "--psm 6 --oem 3"
+            with Image.open(path) as im:
+                return pytesseract.image_to_string(im, lang=lang, config=config)
+        except Exception as e:
+            print(f"[WARN] Tesseract OCR失敗: {path} ({e})")
+            return ""
 
 def extract_pdf_text(path: Path) -> str:
     try:
@@ -112,7 +142,7 @@ def read_csv_text(path: Path) -> str:
         print(f"[WARN] CSV読み込み失敗: {path} ({e})")
         return ""
 
-def fetch_url(url: str, ocr_lang: str) -> tuple[str, str]:
+def fetch_url(url: str, ocr_lang: str, google_credentials_path: Optional[str]) -> tuple[str, str]:
     r = HTTP.get(url, timeout=30)
     r.raise_for_status()
     ctype = r.headers.get("Content-Type", "").lower()
@@ -121,7 +151,7 @@ def fetch_url(url: str, ocr_lang: str) -> tuple[str, str]:
         fname = sanitize_filename(Path(urlparse(url).path).name or "download") + ext
         tmp = Path(".tmp_downloads"); ensure_dir(tmp); fpath = tmp / fname
         with open(fpath, "wb") as f: f.write(r.content)
-        return ("image", ocr_image(fpath, lang=ocr_lang))
+        return ("image", ocr_image(fpath, lang=ocr_lang, google_credentials_path=google_credentials_path))
     elif "html" in ctype:
         soup = BeautifulSoup(r.text, "lxml")
         for tag in soup(["script", "style", "noscript"]): tag.extract()
@@ -139,10 +169,10 @@ def fetch_url(url: str, ocr_lang: str) -> tuple[str, str]:
             return (ctype or "unknown", r.content.decode(r.apparent_encoding or "utf-8", errors="ignore"))
         except Exception: return (ctype or "unknown", "")
 
-def read_local(path: Path, ocr_lang: str) -> tuple[str, str]:
+def read_local(path: Path, ocr_lang: str, google_credentials_path: Optional[str]) -> tuple[str, str]:
     ext = path.suffix.lower()
     if ext in TXT_EXTS: return ("text", path.read_text(encoding="utf-8", errors="ignore"))
-    elif ext in IMG_EXTS: return ("image", ocr_image(path, lang=ocr_lang))
+    elif ext in IMG_EXTS: return ("image", ocr_image(path, lang=ocr_lang, google_credentials_path=google_credentials_path))
     elif ext in PDF_EXTS: return ("pdf", extract_pdf_text(path))
     elif ext in CSV_EXTS: return ("csv", read_csv_text(path))
     else: return ("unknown", "")
@@ -159,7 +189,8 @@ def summarize_one_text(text: str, api_key: str, model: str, max_chars: int) -> s
     chunks = chunk_text(text, max_chars=max_chars)
     summaries = []
     system_hint = "あなたは優秀な学習アシスタントです。提供されたテキストの要点を、後から見返して内容をすぐに思い出せるように、構造化してまとめてください。"
-    user_task_prompt = "以下のテキストについて、まず全体を3〜5行で要約し、次にその要約を補足する重要なキーワードやポイントを5〜7個、箇条書きで挙げてください。このノートの目的は、内容を完全に網羅することではなく、後から見た人が「ああ、こういう内容だった」と思い出すためのトリガーとなることです。"
+    user_task_prompt = """以下のテキストについて、まず全体を3〜5行で要約し、次にその要約を補足する重要なキーワードやポイントを5〜7個、箇条書きで挙げてください。このノートの目的は、内容を完全に網羅することではなく、後から見た人が「ああ、こういう内容だった」と思い出すためのトリガーとなることです。
+出力はMarkdown形式でお願いします。例えば、見出し、箇条書き、太字などを使って構造化してください。"""
     for idx, ch in enumerate(chunks, 1):
         if idx > 1: time.sleep(0.2)
         summaries.append(call_llm_summarize(ch, model=model, system_hint=system_hint, user_task_prompt=user_task_prompt, api_key=api_key))
@@ -178,24 +209,24 @@ def extract_technical_terms(text: str, api_key: str, model: str) -> List[str]:
 
 def suggest_category(text: str, api_key: str, model: str) -> str:
     try:
-        return call_llm_summarize(text=text[:4000], model=model, system_hint="あなたはコンテンツ分類の専門家です。", user_task_prompt="以下のテキストに最もふさわしいカテゴリ名を、日本語で、単語または短いフレーズで一つだけ提案してください。例: 'プログラミング'", api_key=api_key).strip().replace('"', '')
+        return call_llm_summarize(text=text[:4000], model=model, system_hint="あなたはコンテンツ分類の専門家です。",         user_task_prompt="以下のテキストに最もふさわしい、**より大まかで一般的な**カテゴリ名を、日本語で、単語または短いフレーズで一つだけ提案してください。例: 'テクノロジー', 'ビジネス', '教育', '健康', 'エンターテイメント'", api_key=api_key).strip().replace('"', '')
     except Exception as e:
         print(f"[WARN] カテゴリ推薦中にエラー: {e}")
         return ""
 
 # -------- 並列処理オーケストレーション --------
 def _process_one_source_fully(args: tuple) -> dict:
-    i, src, api_key, model, max_chars, ocr_lang, tesseract_cmd = args
+    i, src, api_key, model, max_chars, ocr_lang, tesseract_cmd, google_credentials_path = args
     source_id = f"source-{i+1}"
     print(f"[STATUS]   - ソース {i+1} ({src[:50]}...) の処理を開始")
     try:
         if is_url(src):
-            _, text = fetch_url(src, ocr_lang=ocr_lang)
+            _, text = fetch_url(src, ocr_lang=ocr_lang, google_credentials_path=google_credentials_path)
             source_name = src
         else:
             p = Path(src)
             if not p.exists(): raise FileNotFoundError(f"Not found: {src}")
-            _, text = read_local(p, ocr_lang=ocr_lang)
+            _, text = read_local(p, ocr_lang=ocr_lang, google_credentials_path=google_credentials_path)
             source_name = p.name
         if not text or not text.strip():
             return {"id": source_id, "name": source_name, "error": "テキスト抽出不可"}
@@ -219,36 +250,52 @@ def _process_one_source_fully(args: tuple) -> dict:
 def summarize_multiple_inputs(
     srcs: List[str], api_key: str, model: str = "gpt-4o-mini",
     highlight: bool = False, max_chars: int = 3500,
-    tesseract_cmd: Optional[str] = None, ocr_lang: str = "jpn+eng", **kwargs
+    tesseract_cmd: Optional[str] = None, ocr_lang: str = "jpn+eng",
+    google_credentials_path: Optional[str] = None, **kwargs
 ) -> tuple[str, list[str], str]:
     print(f"[STATUS] 全ソースの並列処理を開始します... (全{len(srcs)}件)")
     if tesseract_cmd: pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
 
     source_results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(srcs)) as executor:
-        tasks = [(i, src, api_key, model, max_chars, ocr_lang, tesseract_cmd) for i, src in enumerate(srcs)]
+        tasks = [(i, src, api_key, model, max_chars, ocr_lang, tesseract_cmd, google_credentials_path) for i, src in enumerate(srcs)]
         source_results = [res for res in executor.map(_process_one_source_fully, tasks) if res and not res.get("error")]
     print(f"[STATUS] 全ソースの並列処理が完了。({len(source_results)}件のソース処理に成功)")
 
     if not source_results:
-        return "[INFO] 全てのソースからテキストが抽出できませんでした。", [], ""
+        return "[INFO] 全てのソースからテキストが抽出できませんでした。", [], "", [] # 4つ目の引数として空のリストを追加
 
     print(f"[STATUS] 最終HTMLを生成中...")
     all_terms = {term for res in source_results for term in res.get("terms", [])}
     all_categories = [res.get("category") for res in source_results if res.get("category")]
     final_category = max(set(all_categories), key=all_categories.count) if all_categories else ""
 
-    html_parts = ["<h1>今日のまとめ</h1>", "<ul>"]
+    # CSSスタイルを追加
+    css_style = '''
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 20px; background-color: #f4f4f4; }
+        h1, h2, h3 { color: #0056b3; border-bottom: 2px solid #eee; padding-bottom: 5px; margin-top: 30px; }
+        ul { list-style-type: disc; margin-left: 20px; }
+        li { margin-bottom: 5px; }
+        .summary-content { background-color: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        a { color: #007bff; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        hr { border: 0; border-top: 1px solid #eee; margin: 40px 0; }
+    </style>
+    '''
+
+    html_parts = [f"<!DOCTYPE html><html lang=\"ja\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><title>今日のまとめ</title>{css_style}</head><body>", "<h1>今日のまとめ</h1>", "<ul>"]
     for res in source_results:
-        html_parts.append(f'<li><a href="#{res["id"]}">{res["title"]}</a></li>')
+        html_parts.append(f'<li><a href=\"#{res["id"]}\">{res["title"]}</a></li>')
     html_parts.append("</ul>")
 
     for res in source_results:
-        html_parts.append(f'<h2 id="{res["id"]}">{res["title"]}</h2>')
-        summary_html = res["summary"].replace("\n", "<br>")
+        html_parts.append(f'<h2 id=\" {res["id"]}\">{res["title"]}</h2>')
+        # ここでMarkdownをHTMLに変換
+        summary_html = markdown.markdown(res["summary"])
         html_parts.append(f'<div class="summary-content">{summary_html}</div>')
         html_parts.append("<hr>")
-    final_html = "\n".join(html_parts)
+    final_html = "\n".join(html_parts) + "</body></html>"
 
     if highlight:
         print("[STATUS] 追加処理: ハイライトを適用中...")
@@ -256,7 +303,7 @@ def summarize_multiple_inputs(
         # final_html = format_summary_with_llm(final_html, api_key=api_key, model=model)
 
     print("[STATUS] 全ての処理が完了しました。")
-    return final_html, sorted(list(all_terms)), final_category, source_results
+    return final_html, sorted(list(all_terms)), source_results
 
 # -------- CLIラッパー --------
 def main():
@@ -272,9 +319,11 @@ def main():
     
     # I/O
     parser.add_argument("--output-file", type=Path, default=Path("cli_summary_output.html"), help="出力HTMLファイル名")
+    parser.add_argument("--json-output-file", type=Path, default=None, help="カテゴリと専門用語を蓄積するJSONファイル名")
     parser.add_argument("--max-chars", type=int, default=3500, help="1チャンクの最大文字数")
     parser.add_argument("--tesseract-cmd", default=None, help="Tesseractの実行パス（Windows等で必要なら指定）")
     parser.add_argument("--ocr-lang", default="jpn+eng", help="OCR言語（例: 'jpn', 'eng'）")
+    parser.add_argument("--google-credentials", default=None, help="Google Cloud Vision APIのサービスアカウントキーJSONファイルへのパス")
 
     args = parser.parse_args()
 
@@ -283,19 +332,23 @@ def main():
         sys.exit(1)
 
     try:
-        final_html, final_terms, final_category, _ = summarize_multiple_inputs(
+        final_html, final_terms, source_results = summarize_multiple_inputs(
             srcs=args.inputs,
             api_key=args.api_key,
             model=args.model,
             max_chars=args.max_chars,
             tesseract_cmd=args.tesseract_cmd,
             ocr_lang=args.ocr_lang,
-            highlight=False # CLIではハイライトは非適用
+            google_credentials_path=args.google_credentials or os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
+            highlight=False
         )
 
         # 結果をターミナルに表示
         print("\n" + "="*20 + " 処理結果 " + "="*20)
-        print(f"■ 代表カテゴリ: {final_category}")
+        print(f"■ 検出されたカテゴリ:")
+        for res in source_results:
+            print(f"  - {res['name'][:50]}...: {res.get('category', 'N/A')}") # ソース名とカテゴリを表示
+
         print(f"■ 抽出された専門用語 ({len(final_terms)}個):")
         # ターミナルに見やすく表示するため、一定数で改行
         term_lines = []
@@ -313,8 +366,46 @@ def main():
         args.output_file.write_text(final_html, encoding="utf-8")
         print(f"\n✅ 詳細な要約HTMLを {args.output_file} に保存しました。")
 
+        # JSON出力ファイルが指定されている場合
+        if args.json_output_file:
+            json_data = []
+            if args.json_output_file.exists():
+                try:
+                    with open(args.json_output_file, 'r', encoding='utf-8') as f:
+                        json_data = json.load(f)
+                except json.JSONDecodeError:
+                    print(f"[WARN] 既存のJSONファイル '{args.json_output_file}' の読み込みに失敗しました。新しいファイルとして扱います。", file=sys.stderr)
+                except Exception as e:
+                    print(f"[WARN] 既存のJSONファイル '{args.json_output_file}' の読み込み中にエラーが発生しました: {e}", file=sys.stderr)
+
+            updated_count = 0
+            for res in source_results:
+                # 重複チェック (URL/パスで判断)
+                is_duplicate = False
+                for existing_item in json_data:
+                    if existing_item.get("source_name") == res["name"]:
+                        is_duplicate = True
+                        break
+
+                if not is_duplicate:
+                    json_data.append({
+                        "source_name": res["name"],
+                        "title": res["title"],
+                        "category": res.get("category", "N/A"),
+                        "terms": res.get("terms", []),
+                        "summary_html_link": str(args.output_file) # 生成されたHTMLファイルへのリンク
+                    })
+                    updated_count += 1
+            
+            if updated_count > 0:
+                with open(args.json_output_file, 'w', encoding='utf-8') as f:
+                    json.dump(json_data, f, ensure_ascii=False, indent=2)
+                print(f"✅ {updated_count}件の新しいカテゴリ/専門用語データを {args.json_output_file} に保存しました。")
+            else:
+                print(f"ℹ️ 新しいカテゴリ/専門用語データはありませんでした。")
+
     except Exception as e:
-        print(f"\n[FATAL] 処理中に予期せぬエラーが発生しました: {e}", file=sys.stderr)
+        print(f"[FATAL] 処理中に予期せぬエラーが発生しました: {e}", file=sys.stderr)
         sys.exit(1)
 
 if __name__ == "__main__":

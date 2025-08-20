@@ -7,10 +7,14 @@ from llm_core import call_llm_summarize # analyzer.pyで使われているので
 def main():
     parser = argparse.ArgumentParser(description="Analyze user profile from a JSON file.")
     parser.add_argument("json_file", help="Path to the JSON file containing categories and terms data.")
-    parser.add_argument("--api_key", required=True, help="Your API key for the LLM service.")
+    parser.add_argument("--api_key", default=os.getenv("OPENAI_API_KEY"), help="Your API key for the LLM service. Can also be set via OPENAI_API_KEY environment variable.")
     parser.add_argument("--model", default="gpt-4o-mini", help="The LLM model to use (default: gpt-4o-mini).")
 
     args = parser.parse_args()
+
+    if not args.api_key:
+        print("[ERROR] APIキーが必須です。--api_key引数またはOPENAI_API_KEY環境変数を設定してください。", file=sys.stderr)
+        return
 
     if not os.path.exists(args.json_file):
         print(f"Error: JSON file not found at '{args.json_file}'")
