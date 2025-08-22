@@ -17,7 +17,6 @@
 
 ```sh
 uv venv
-uv pip sync
 ```
 
 ### 仮想環境の有効化
@@ -62,19 +61,33 @@ userはセッションで管理
   - アカウント作成
 - [POST] /login
   - アカウントログイン
-- [GET] /profile
-  - アカウントデータ取得
+- [GET] /profile?{month}
+  - アカウントデータ+指定(未指定時は当月)のアクティブ日一覧取得
 - [POST] /upload/file
-  - ファイルアップロード(スキャナー)
-- [POST] /upload/history
-  - 検索履歴アップロード
-- [GET] /file/[id]
+  - ファイルアップロード(ユーザーによるアップロード)
+- [POST] /upload/file/{id}
+  - ファイルアップロード(スキャナー用のwebhook)
+  - idはアカウント作成時に作成にしとく
+- [POST] /upload/history/{id}
+  - 検索履歴アップロード(自動送信システム用のwebhook)
+  - idはアカウント作成時に作成にしとく
+- [get] /files?{date}
+  - 指定の日付のファイルデータ(idのリスト)が出てくる(パラメーターで日付指定、ない場合はその日付)
+- [GET] /file/{id}
   - ファイル閲覧
-- [GET] /history/[date]
+- [GET] /history/{date}
   - 検索履歴閲覧
-- [GET] /log/[date]?[type]
+- [GET] /log/{date}?{type}
   - 生データでのアップロードなどの履歴
-- [GET] /archive/[date]?[type]
+- [GET] /archive/{date}?{type}
   - AI加工を行なったデータの履歴
-- [GET] /test
-  - 確認テストを出力
+- [GET] /test?{date}&{tags}
+  - 確認テストを出力(パラメーターで日付指定、ない場合はその日付)
+  - タグで指定可能
+- [GET] /tags
+  - タグ一覧取得 (AI により自動生成されたタグ)
+- [GET] /tags/search_history/{search_history_id}
+  - 指定検索履歴のタグ一覧
+  - (付与/生成は定期実行AIが実施)
+
+## 定期実行
