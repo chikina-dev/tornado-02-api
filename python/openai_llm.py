@@ -6,7 +6,6 @@ from typing import Optional
 from openai import OpenAI
 
 # .env 読み込み（.env を使わない場合は不要）
-# pip install python-dotenv
 try:
     from dotenv import load_dotenv
     load_dotenv()  # 存在すれば自動読み込み

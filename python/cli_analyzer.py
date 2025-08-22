@@ -2,7 +2,7 @@ import argparse
 import json
 import os
 from analyzer import analyze_user_profile
-from llm_core import call_llm_summarize # analyzer.pyで使われているので、ここでもインポートが必要
+from openai_llm import call_llm_summarize # analyzer.pyで使われているので、ここでもインポートが必要
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze user profile from a JSON file.")

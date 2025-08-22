@@ -21,16 +21,13 @@ from pathlib import Path
 from typing import Optional, List
 from urllib.parse import urlparse
 
-import requests
-from requests.adapters import HTTPAdapter, Retry
+import httpx
+import asyncio
 from bs4 import BeautifulSoup
-from PIL import Image
-import pytesseract
 from pypdf import PdfReader
 
-from llm_core import call_llm_summarize
-from google.cloud import vision
-import io
+from openai_llm import call_llm_summarize
+from ocr_utils import ocr_image # Added this import
 import markdown
 
 # -------- 共通ユーティリティ --------
@@ -73,53 +70,7 @@ def chunk_text(text: str, max_chars: int = 3500):
     return chunks
 
 
-def build_requests_session() -> requests.Session:
-    session = requests.Session()
-    retries = Retry(total=3, backoff_factor=0.8, status_forcelist=(429, 500, 502, 503, 504), allowed_methods=frozenset(["GET", "HEAD", "OPTIONS"]))
-    adapter = HTTPAdapter(max_retries=retries)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-    session.headers.update({"User-Agent": "SummarizerBot/1.0"})
-    return session
-
-HTTP = build_requests_session()
-
 # -------- コンテンツ抽出 --------
-def ocr_image(path: Path, tesseract_cmd: Optional[str] = None, lang: str = "jpn+eng", google_credentials_path: Optional[str] = None) -> str:
-    if google_credentials_path:
-        # Google Cloud Vision APIを使用
-        try:
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = google_credentials_path
-            client = vision.ImageAnnotatorClient()
-
-            with io.open(path, 'rb') as image_file:
-                content = image_file.read()
-
-            image = vision.Image(content=content)
-            response = client.text_detection(image=image)
-            texts = response.text_annotations
-
-            if texts:
-                # 最初のテキストアノテーションが全体のテキスト
-                return texts[0].description
-            else:
-                return ""
-        except Exception as e:
-            print(f"[WARN] Google Cloud Vision API OCR失敗: {path} ({e})")
-            return ""
-    else:
-        # Tesseract OCRを使用 (フォールバックまたはデフォルト)
-        if tesseract_cmd: pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
-        try:
-            # 手書き文字認識の精度向上のため、PSMとOEMを設定
-            # 最適な設定は画像によって異なるため、必要に応じて調整してください。
-            # 例: --psm 6 (単一の均一なテキストブロック) --oem 3 (LSTMとレガシーエンジンの両方)
-            config = "--psm 6 --oem 3"
-            with Image.open(path) as im:
-                return pytesseract.image_to_string(im, lang=lang, config=config)
-        except Exception as e:
-            print(f"[WARN] Tesseract OCR失敗: {path} ({e})")
-            return ""
 
 def extract_pdf_text(path: Path) -> str:
     try:
@@ -142,32 +93,37 @@ def read_csv_text(path: Path) -> str:
         print(f"[WARN] CSV読み込み失敗: {path} ({e})")
         return ""
 
-def fetch_url(url: str, ocr_lang: str, google_credentials_path: Optional[str]) -> tuple[str, str]:
-    r = HTTP.get(url, timeout=30)
-    r.raise_for_status()
-    ctype = r.headers.get("Content-Type", "").lower()
-    if "image" in ctype:
-        ext = "." + ctype.split("/")[-1].split(";")[0]
-        fname = sanitize_filename(Path(urlparse(url).path).name or "download") + ext
-        tmp = Path(".tmp_downloads"); ensure_dir(tmp); fpath = tmp / fname
-        with open(fpath, "wb") as f: f.write(r.content)
-        return ("image", ocr_image(fpath, lang=ocr_lang, google_credentials_path=google_credentials_path))
-    elif "html" in ctype:
-        soup = BeautifulSoup(r.text, "lxml")
-        for tag in soup(["script", "style", "noscript"]): tag.extract()
-        return ("html", re.sub(r"\n{3,}", "\n\n", soup.get_text("\n")))
-    elif "text/plain" in ctype:
-        return ("text", r.text)
-    elif "application/pdf" in ctype:
-        tmp = Path(".tmp_downloads"); ensure_dir(tmp)
-        fname = sanitize_filename(Path(urlparse(url).path).name or "download") + ".pdf"
-        fpath = tmp / fname
-        with open(fpath, "wb") as f: f.write(r.content)
-        return ("pdf", extract_pdf_text(fpath))
-    else:
-        try:
-            return (ctype or "unknown", r.content.decode(r.apparent_encoding or "utf-8", errors="ignore"))
-        except Exception: return (ctype or "unknown", "")
+async def fetch_url(url: str, ocr_lang: str, google_credentials_path: Optional[str]) -> tuple[str, str]:
+    async with httpx.AsyncClient(timeout=30, headers={"User-Agent": "SummarizerBot/1.0"}) as client:
+        # httpx does not have built-in retry like requests.adapters.Retry. 
+        # For simplicity, we omit complex retry logic for now.
+        r = await client.get(url)
+        r.raise_for_status()
+        ctype = r.headers.get("Content-Type", "").lower()
+        if "image" in ctype:
+            ext = "." + ctype.split("/")[-1].split(";")[0]
+            fname = sanitize_filename(Path(urlparse(url).path).name or "download") + ext
+            tmp = Path(".tmp_downloads"); ensure_dir(tmp); fpath = tmp / fname
+            # File I/O is synchronous, but for small files, it's often acceptable in async context
+            # For large files, aiofiles would be better.
+            with open(fpath, "wb") as f: f.write(r.content)
+            return ("image", ocr_image(fpath, lang=ocr_lang, google_credentials_path=google_credentials_path))
+        elif "html" in ctype:
+            soup = BeautifulSoup(r.text, "lxml")
+            for tag in soup(["script", "style", "noscript"]): tag.extract()
+            return ("html", re.sub(r"\n{3,}", "\n\n", soup.get_text("\n")))
+        elif "text/plain" in ctype:
+            return ("text", r.text)
+        elif "application/pdf" in ctype:
+            tmp = Path(".tmp_downloads"); ensure_dir(tmp)
+            fname = sanitize_filename(Path(urlparse(url).path).name or "download") + ".pdf"
+            fpath = tmp / fname
+            with open(fpath, "wb") as f: f.write(r.content)
+            return ("pdf", extract_pdf_text(fpath))
+        else:
+            try:
+                return (ctype or "unknown", r.content.decode(r.apparent_encoding or "utf-8", errors="ignore"))
+            except Exception: return (ctype or "unknown", "")
 
 def read_local(path: Path, ocr_lang: str, google_credentials_path: Optional[str]) -> tuple[str, str]:
     ext = path.suffix.lower()
@@ -215,31 +171,40 @@ def suggest_category(text: str, api_key: str, model: str) -> str:
         return ""
 
 # -------- 並列処理オーケストレーション --------
-def _process_one_source_fully(args: tuple) -> dict:
+async def _process_one_source_fully(args: tuple) -> dict:
     i, src, api_key, model, max_chars, ocr_lang, tesseract_cmd, google_credentials_path = args
     source_id = f"source-{i+1}"
     print(f"[STATUS]   - ソース {i+1} ({src[:50]}...) の処理を開始")
     try:
         if is_url(src):
-            _, text = fetch_url(src, ocr_lang=ocr_lang, google_credentials_path=google_credentials_path)
+            _, text = await fetch_url(src, ocr_lang=ocr_lang, google_credentials_path=google_credentials_path)
             source_name = src
         else:
             p = Path(src)
             if not p.exists(): raise FileNotFoundError(f"Not found: {src}")
-            _, text = read_local(p, ocr_lang=ocr_lang, google_credentials_path=google_credentials_path)
+            # read_local is synchronous, run it in a thread pool to avoid blocking the event loop
+            loop = asyncio.get_running_loop()
+            _, text = await loop.run_in_executor(None, read_local, p, ocr_lang, google_credentials_path)
             source_name = p.name
         if not text or not text.strip():
             return {"id": source_id, "name": source_name, "error": "テキスト抽出不可"}
 
+        # Use a ThreadPoolExecutor for CPU-bound tasks (LLM calls, OCR)
+        # This ensures they don't block the asyncio event loop.
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as inner_executor:
-            future_title = inner_executor.submit(generate_title, text, api_key, model)
-            future_summary = inner_executor.submit(summarize_one_text, text, api_key, model, max_chars)
-            future_terms = inner_executor.submit(extract_technical_terms, text, api_key, model)
-            future_category = inner_executor.submit(suggest_category, text, api_key, model)
+            loop = asyncio.get_running_loop()
+            future_title = loop.run_in_executor(inner_executor, generate_title, text, api_key, model)
+            future_summary = loop.run_in_executor(inner_executor, summarize_one_text, text, api_key, model, max_chars)
+            future_terms = loop.run_in_executor(inner_executor, extract_technical_terms, text, api_key, model)
+            future_category = loop.run_in_executor(inner_executor, suggest_category, text, api_key, model)
+
+            title, summary, terms, category = await asyncio.gather(
+                future_title, future_summary, future_terms, future_category
+            )
             result = {
                 "id": source_id, "name": source_name,
-                "title": future_title.result(), "summary": future_summary.result(),
-                "terms": future_terms.result(), "category": future_category.result(),
+                "title": title, "summary": summary,
+                "terms": terms, "category": category,
             }
         print(f"[STATUS]   - ソース {i+1} ({src[:50]}...) の処理を完了")
         return result
@@ -247,7 +212,7 @@ def _process_one_source_fully(args: tuple) -> dict:
         print(f"[ERROR] ソース処理中に致命的なエラー: {src} ({e})")
         return {"id": source_id, "name": src, "error": str(e)}
 
-def summarize_multiple_inputs(
+async def summarize_multiple_inputs(
     srcs: List[str], api_key: str, model: str = "gpt-4o-mini",
     highlight: bool = False, max_chars: int = 3500,
     tesseract_cmd: Optional[str] = None, ocr_lang: str = "jpn+eng",
@@ -256,10 +221,13 @@ def summarize_multiple_inputs(
     print(f"[STATUS] 全ソースの並列処理を開始します... (全{len(srcs)}件)")
     if tesseract_cmd: pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
 
-    source_results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(srcs)) as executor:
-        tasks = [(i, src, api_key, model, max_chars, ocr_lang, tesseract_cmd, google_credentials_path) for i, src in enumerate(srcs)]
-        source_results = [res for res in executor.map(_process_one_source_fully, tasks) if res and not res.get("error")]
+    tasks = [(i, src, api_key, model, max_chars, ocr_lang, tesseract_cmd, google_credentials_path) for i, src in enumerate(srcs)]
+    # Use asyncio.gather to run _process_one_source_fully concurrently
+    processed_futures = [
+        _process_one_source_fully(task_args) for task_args in tasks
+    ]
+    processed_results = await asyncio.gather(*processed_futures)
+    source_results = [res for res in processed_results if res and not res.get("error")]
     print(f"[STATUS] 全ソースの並列処理が完了。({len(source_results)}件のソース処理に成功)")
 
     if not source_results:
@@ -286,11 +254,11 @@ def summarize_multiple_inputs(
 
     html_parts = [f"<!DOCTYPE html><html lang=\"ja\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><title>今日のまとめ</title>{css_style}</head><body>", "<h1>今日のまとめ</h1>", "<ul>"]
     for res in source_results:
-        html_parts.append(f'<li><a href=\"#{res["id"]}\">{res["title"]}</a></li>')
+        html_parts.append(f"<li><a href='#{res['id']}'>{res['title']}</a></li>")
     html_parts.append("</ul>")
 
     for res in source_results:
-        html_parts.append(f'<h2 id=\" {res["id"]}\">{res["title"]}</h2>')
+        html_parts.append(f"<h2 id='{res['id']}'>{res['title']}</h2>")
         # ここでMarkdownをHTMLに変換
         summary_html = markdown.markdown(res["summary"])
         html_parts.append(f'<div class="summary-content">{summary_html}</div>')
@@ -304,6 +272,7 @@ def summarize_multiple_inputs(
 
     print("[STATUS] 全ての処理が完了しました。")
     return final_html, sorted(list(all_terms)), source_results
+
 
 # -------- CLIラッパー --------
 def main():
@@ -332,15 +301,17 @@ def main():
         sys.exit(1)
 
     try:
-        final_html, final_terms, source_results = summarize_multiple_inputs(
-            srcs=args.inputs,
-            api_key=args.api_key,
-            model=args.model,
-            max_chars=args.max_chars,
-            tesseract_cmd=args.tesseract_cmd,
-            ocr_lang=args.ocr_lang,
-            google_credentials_path=args.google_credentials or os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
-            highlight=False
+        final_html, final_terms, source_results = asyncio.run(
+            summarize_multiple_inputs(
+                srcs=args.inputs,
+                api_key=args.api_key,
+                model=args.model,
+                max_chars=args.max_chars,
+                tesseract_cmd=args.tesseract_cmd,
+                ocr_lang=args.ocr_lang,
+                google_credentials_path=args.google_credentials or os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
+                highlight=False
+            )
         )
 
         # 結果をターミナルに表示
