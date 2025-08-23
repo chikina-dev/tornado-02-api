@@ -16,6 +16,17 @@ dependencies = [
     "psycopg2-binary>=2.9.10",
     # Added for test environment (SQLite async driver)
     "aiosqlite>=0.20.0",
+    "httpx>=0.27.0",
+    "google-generativeai>=0.7.2", # Keep existing
+    # Added for CLI/OCR/LLM functionality
+    "google-cloud-vision",
+    "pytesseract",
+    "openai",
+    "beautifulsoup4",
+    "lxml",
+    "pypdf",
+    "Pillow",
+    "Markdown",
 ]
 
 [dependency-groups]
