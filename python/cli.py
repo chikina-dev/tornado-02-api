@@ -18,13 +18,21 @@ import csv
 import json
 import concurrent.futures
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from urllib.parse import urlparse
+
+import sys
+from pathlib import Path
+
+# Add project root to sys.path for module imports
+project_root = Path(__file__).resolve().parents[1]
+sys.path.append(str(project_root))
 
 import httpx
 import asyncio
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
+import json # New import
 
 from openai_llm import call_llm_summarize
 from ocr_utils import ocr_image # Added this import
@@ -46,7 +54,7 @@ def is_url(s: str) -> bool:
 
 
 def sanitize_filename(name: str) -> str:
-    safe = re.sub(r"[^\\w\-.]+", "_", name.strip())
+    safe = re.sub(r"[^\w\-.]+", "_", name.strip())
     return safe[:200] if len(safe) > 200 else safe
 
 
@@ -95,7 +103,7 @@ def read_csv_text(path: Path) -> str:
 
 async def fetch_url(url: str, ocr_lang: str, google_credentials_path: Optional[str]) -> tuple[str, str]:
     async with httpx.AsyncClient(timeout=30, headers={"User-Agent": "SummarizerBot/1.0"}) as client:
-        # httpx does not have built-in retry like requests.adapters.Retry. 
+        # httpx does not have built-in retry like requests.adapters.Retry.
         # For simplicity, we omit complex retry logic for now.
         r = await client.get(url)
         r.raise_for_status()
@@ -145,8 +153,8 @@ def summarize_one_text(text: str, api_key: str, model: str, max_chars: int) -> s
     chunks = chunk_text(text, max_chars=max_chars)
     summaries = []
     system_hint = "あなたは優秀な学習アシスタントです。提供されたテキストの要点を、後から見返して内容をすぐに思い出せるように、構造化してまとめてください。"
-    user_task_prompt = """以下のテキストについて、まず全体を3〜5行で要約し、次にその要約を補足する重要なキーワードやポイントを5〜7個、箇条書きで挙げてください。このノートの目的は、内容を完全に網羅することではなく、後から見た人が「ああ、こういう内容だった」と思い出すためのトリガーとなることです。
-出力はMarkdown形式でお願いします。例えば、見出し、箇条書き、太字などを使って構造化してください。"""
+    user_task_prompt = '''以下のテキストについて、まず全体を3〜5行で要約し、次にその要約を補足する重要なキーワードやポイントを5〜7個、箇条書きで挙げてください。このノートの目的は、内容を完全に網羅することではなく、後から見た人が「ああ、こういう内容だった」と思い出すためのトリガーとなることです。
+出力はMarkdown形式でお願いします。例えば、見出し、箇条書き、太字などを使って構造化してください。'''
     for idx, ch in enumerate(chunks, 1):
         if idx > 1: time.sleep(0.2)
         summaries.append(call_llm_summarize(ch, model=model, system_hint=system_hint, user_task_prompt=user_task_prompt, api_key=api_key))
@@ -154,7 +162,7 @@ def summarize_one_text(text: str, api_key: str, model: str, max_chars: int) -> s
 
 def extract_technical_terms(text: str, api_key: str, model: str) -> List[str]:
     try:
-        response_text = call_llm_summarize(text=text[:8000], model=model, system_hint="あなたはテキストから専門用語を抽出する専門家です。", user_task_prompt="以下のテキストから、主要な専門用語を10個以内で抽出し、純粋なJSON配列（文字列のリスト）として出力してください。例: [\"機械学習\", \"Python\"]", api_key=api_key)
+        response_text = call_llm_summarize(text=text[:8000], model=model, system_hint="あなたはテキストから専門用語を抽出する専門家です。", user_task_prompt='以下のテキストから、主要な専門用語を10個以内で抽出し、純粋なJSON配列（文字列のリスト）として出力してください。例: ["機械学習", "Python"]', api_key=api_key)
         match = re.search(r'```json\n(.*?)\n```', response_text, re.DOTALL)
         if match: response_text = match.group(1)
         terms = json.loads(response_text)
@@ -217,7 +225,7 @@ async def summarize_multiple_inputs(
     highlight: bool = False, max_chars: int = 3500,
     tesseract_cmd: Optional[str] = None, ocr_lang: str = "jpn+eng",
     google_credentials_path: Optional[str] = None, **kwargs
-) -> tuple[str, list[str], str]:
+) -> tuple[list[str], str, List[Dict[str, Any]]]: # Changed return type
     print(f"[STATUS] 全ソースの並列処理を開始します... (全{len(srcs)}件)")
     if tesseract_cmd: pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
 
@@ -231,51 +239,50 @@ async def summarize_multiple_inputs(
     print(f"[STATUS] 全ソースの並列処理が完了。({len(source_results)}件のソース処理に成功)")
 
     if not source_results:
-        return "[INFO] 全てのソースからテキストが抽出できませんでした。", [], "", [] # 4つ目の引数として空のリストを追加
+        return [], "", [] # Changed return value
 
-    print(f"[STATUS] 最終HTMLを生成中...")
     all_terms = {term for res in source_results for term in res.get("terms", [])}
     all_categories = [res.get("category") for res in source_results if res.get("category")]
     final_category = max(set(all_categories), key=all_categories.count) if all_categories else ""
 
-    # CSSスタイルを追加
-    css_style = '''
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; margin: 20px; background-color: #f4f4f4; }
-        h1, h2, h3 { color: #0056b3; border-bottom: 2px solid #eee; padding-bottom: 5px; margin-top: 30px; }
-        ul { list-style-type: disc; margin-left: 20px; }
-        li { margin-bottom: 5px; }
-        .summary-content { background-color: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-        a { color: #007bff; text-decoration: none; }
-        a:hover { text-decoration: underline; }
-        hr { border: 0; border-top: 1px solid #eee; margin: 40px 0; }
-    </style>
-    '''
-
-    html_parts = [f"<!DOCTYPE html><html lang=\"ja\"><head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"><title>今日のまとめ</title>{css_style}</head><body>", "<h1>今日のまとめ</h1>", "<ul>"]
-    for res in source_results:
-        html_parts.append(f"<li><a href='#{res['id']}'>{res['title']}</a></li>")
-    html_parts.append("</ul>")
-
-    for res in source_results:
-        html_parts.append(f"<h2 id='{res['id']}'>{res['title']}</h2>")
-        # ここでMarkdownをHTMLに変換
-        summary_html = markdown.markdown(res["summary"])
-        html_parts.append(f'<div class="summary-content">{summary_html}</div>')
-        html_parts.append("<hr>")
-    final_html = "\n".join(html_parts) + "</body></html>"
-
-    if highlight:
-        print("[STATUS] 追加処理: ハイライトを適用中...")
-        # This function is not defined in the new code, so I will remove it for now.
-        # final_html = format_summary_with_llm(final_html, api_key=api_key, model=model)
-
     print("[STATUS] 全ての処理が完了しました。")
-    return final_html, sorted(list(all_terms)), source_results
+    return sorted(list(all_terms)), final_category, source_results # Changed return value
+
+def generate_summary_markdown(source_results: List[Dict[str, Any]]) -> str:
+    """
+    Generates a Markdown report from the summarized source results.
+    """
+    md_parts = ["# 今日のまとめ\n\n"]
+
+    # Create a table of contents
+    for res in source_results:
+        md_parts.append(f'- [{res["title"]}](#{res["id"]})\n')
+    md_parts.append("\n---\n\n")
+
+    # Add content for each source
+    for res in source_results:
+        md_parts.append(f'<a id="{res["id"]}"></a>\n')
+        md_parts.append(f'## {res["title"]}\n\n')
+        md_parts.append(f'**ソース:** [{res["name"]}]({res["name"]})\n\n')
+        
+        md_parts.append("### 要約\n\n")
+        md_parts.append(res.get("summary", "要約はありません。") + "\n\n")
+
+        # Add terms if they exist
+        terms = res.get("terms", [])
+        if terms:
+            md_parts.append("### 関連キーワード\n\n")
+            for term in terms:
+                md_parts.append(f"- {term}\n")
+            md_parts.append("\n")
+        
+        md_parts.append("---\n\n")
+
+    return "".join(md_parts)
 
 
 # -------- CLIラッパー --------
-def main():
+async def main():
     parser = argparse.ArgumentParser(
         description="Webアプリ版と同等の高度な並列処理をコマンドラインから実行します。",
         formatter_class=argparse.RawTextHelpFormatter
@@ -287,7 +294,7 @@ def main():
     parser.add_argument("--api-key", default=os.getenv("OPENAI_API_KEY"), help="OpenAI API Key. 環境変数 OPENAI_API_KEY も利用可")
     
     # I/O
-    parser.add_argument("--output-file", type=Path, default=Path("cli_summary_output.html"), help="出力HTMLファイル名")
+    parser.add_argument("--output-file", type=Path, default=Path("cli_summary_output.md"), help="出力Markdownファイル名")
     parser.add_argument("--json-output-file", type=Path, default=None, help="カテゴリと専門用語を蓄積するJSONファイル名")
     parser.add_argument("--max-chars", type=int, default=3500, help="1チャンクの最大文字数")
     parser.add_argument("--tesseract-cmd", default=None, help="Tesseractの実行パス（Windows等で必要なら指定）")
@@ -301,17 +308,15 @@ def main():
         sys.exit(1)
 
     try:
-        final_html, final_terms, source_results = asyncio.run(
-            summarize_multiple_inputs(
-                srcs=args.inputs,
-                api_key=args.api_key,
-                model=args.model,
-                max_chars=args.max_chars,
-                tesseract_cmd=args.tesseract_cmd,
-                ocr_lang=args.ocr_lang,
-                google_credentials_path=args.google_credentials or os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
-                highlight=False
-            )
+        final_terms, final_category, source_results = await summarize_multiple_inputs(
+            srcs=args.inputs,
+            api_key=args.api_key,
+            model=args.model,
+            max_chars=args.max_chars,
+            tesseract_cmd=args.tesseract_cmd,
+            ocr_lang=args.ocr_lang,
+            google_credentials_path=args.google_credentials or os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
+            highlight=False
         )
 
         # 結果をターミナルに表示
@@ -333,9 +338,11 @@ def main():
         print("\n".join(term_lines))
         print("\n" + "="*52)
 
-        # HTMLファイルに保存
-        args.output_file.write_text(final_html, encoding="utf-8")
-        print(f"\n✅ 詳細な要約HTMLを {args.output_file} に保存しました。")
+        # Markdownファイルに保存
+        print(f"[STATUS] 最終Markdownを生成中...")
+        final_md = generate_summary_markdown(source_results)
+        args.output_file.write_text(final_md, encoding="utf-8")
+        print(f"\n✅ 詳細な要約Markdownを {args.output_file} に保存しました。")
 
         # JSON出力ファイルが指定されている場合
         if args.json_output_file:
@@ -364,7 +371,7 @@ def main():
                         "title": res["title"],
                         "category": res.get("category", "N/A"),
                         "terms": res.get("terms", []),
-                        "summary_html_link": str(args.output_file) # 生成されたHTMLファイルへのリンク
+                        "summary_markdown_file": str(args.output_file) # 生成されたMarkdownファイルへのリンク
                     })
                     updated_count += 1
             
@@ -380,4 +387,4 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
