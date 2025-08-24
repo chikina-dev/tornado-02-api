@@ -1,7 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List
 from database import database
-from models import UserProfile, Tag, tags, search_history_tags, search_histories
+from models import (
+    UserProfile,
+    Tag,
+    tags,
+    search_history_tags,
+    search_histories,
+    daily_summaries,
+    daily_summary_tags,
+)
 from dependencies import get_current_user
 
 router = APIRouter(prefix="/tags", tags=["tags"])
@@ -29,4 +37,24 @@ async def list_tags_for_search_history(search_history_id: int, current_user: Use
         .where(search_history_tags.c.search_history_id == search_history_id, tags.c.user_id == current_user.id)
     )
     rows = await database.fetch_all(query)
+    return [Tag(id=r["id"], name=r["name"]) for r in rows]
+
+# 日次要約のタグ一覧
+@router.get("/daily/{date}", response_model=List[Tag])
+async def list_tags_for_daily(date: str, current_user: UserProfile = Depends(get_current_user)):
+    ds = await database.fetch_one(
+        daily_summaries.select().where(
+            (daily_summaries.c.user_id == current_user.id) & (daily_summaries.c.date == date)
+        )
+    )
+    if not ds:
+        return []
+    join_q = tags.join(daily_summary_tags, tags.c.id == daily_summary_tags.c.tag_id)
+    q = (
+        tags.select()
+        .select_from(join_q)
+        .where(daily_summary_tags.c.daily_summary_id == ds["id"], tags.c.user_id == current_user.id)
+        .order_by(tags.c.name.asc())
+    )
+    rows = await database.fetch_all(q)
     return [Tag(id=r["id"], name=r["name"]) for r in rows]

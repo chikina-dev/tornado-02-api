@@ -57,7 +57,8 @@ async def created_user(client):
 async def logged_in_client(client, created_user):
     r = await client.post("/login", json={"email": created_user["email"], "password": "password123"})
     assert r.status_code == 200, r.text
-    token_cookie = r.cookies.get("token")
-    if token_cookie:
-        client.cookies.set("token", token_cookie)
+    data = r.json()
+    token = data.get("access_token")
+    assert token, "access_token missing in login response"
+    client.headers["Authorization"] = f"Bearer {token}"
     return client

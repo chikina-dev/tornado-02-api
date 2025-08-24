@@ -1,9 +1,9 @@
 import datetime
 import pytest
-from datetime import timezone
 
 from database import database
 from models import files, search_histories
+from utils.datetime_utils import naive_utc_now
 
 
 @pytest.mark.asyncio
@@ -19,8 +19,8 @@ async def test_profile_empty(logged_in_client):
 @pytest.mark.asyncio
 async def test_profile_activity_current_month(logged_in_client, created_user):
     user_id = created_user["id"]
-    now = datetime.datetime.now(timezone.utc)
-    month_start = datetime.datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    now = naive_utc_now()
+    month_start = datetime.datetime(now.year, now.month, 1)
     day1 = month_start + datetime.timedelta(days=0)
     day2 = month_start + datetime.timedelta(days=1)
 
@@ -30,7 +30,7 @@ async def test_profile_activity_current_month(logged_in_client, created_user):
     )
     # Insert history (day2)
     await database.execute(
-        search_histories.insert().values(user_id=user_id, query="q", created_at=day2)
+        search_histories.insert().values(user_id=user_id, created_at=day2)
     )
 
     r = await logged_in_client.get("/profile")
@@ -44,7 +44,7 @@ async def test_profile_activity_current_month(logged_in_client, created_user):
 @pytest.mark.asyncio
 async def test_profile_activity_previous_month(logged_in_client, created_user):
     user_id = created_user["id"]
-    now = datetime.datetime.now(timezone.utc)
+    now = naive_utc_now()
     # previous month calculation
     if now.month == 1:
         year = now.year - 1
@@ -52,7 +52,7 @@ async def test_profile_activity_previous_month(logged_in_client, created_user):
     else:
         year = now.year
         month = now.month - 1
-    prev_month_day1 = datetime.datetime(year, month, 1, tzinfo=timezone.utc)
+    prev_month_day1 = datetime.datetime(year, month, 1)
 
     await database.execute(
         files.insert().values(user_id=user_id, file_path="prev.txt", created_at=prev_month_day1)

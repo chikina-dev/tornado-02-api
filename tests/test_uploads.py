@@ -17,11 +17,19 @@ async def test_upload_file_and_list(logged_in_client):
 
     single = await logged_in_client.get(f"/file/{file_id}")
     assert single.status_code == 200
-    assert single.json()["file_id"] == file_id
+    data = single.json()
+    import base64
+    assert data["file_id"] == file_id
+    assert base64.b64decode(data["content_base64"]) == file_content
 
 
 async def test_upload_history_and_retrieve(logged_in_client):
-    resp = await logged_in_client.post("/upload/history", json={"query": "python fastapi"})
+    payload = {
+        "url": "https://example.com/article/1",
+        "title": "Example Article",
+        "description": "This is an example page",
+    }
+    resp = await logged_in_client.post("/upload/history", json=payload)
     assert resp.status_code == 200
     history_id = resp.json()["history_id"]
 
