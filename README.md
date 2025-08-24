@@ -53,9 +53,16 @@ uv run init_db.py
 uvicorn main:app --reload
 ```
 
+### コードの検証
+
+```sh
+uv run pytest -q
+```
+
 ## APIサーバーリファレンス
 
-userはセッションで管理
+userはBearer認証で判断
+urlは<https://tornado2025.chigayuki.com>
 
 - [POST] /create
   - アカウント作成

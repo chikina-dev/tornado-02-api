@@ -1,12 +1,14 @@
-from fastapi import Depends, HTTPException, status, Cookie
+from fastapi import Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
-from typing import Optional
 
 from security import SECRET_KEY, ALGORITHM
 from models import UserProfile
 
-async def get_current_user(token: Optional[str] = Cookie(None)):
-    if token is None:
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
+
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
@@ -26,8 +28,6 @@ async def get_current_user(token: Optional[str] = Cookie(None)):
     except JWTError:
         raise credentials_exception
 
-    # In a real app, you'd fetch the user from the database here.
-    # For now, we'll create a UserProfile from the token data.
     user = UserProfile(id=payload.get("id", 1), email=email)
     if user is None:
         raise credentials_exception

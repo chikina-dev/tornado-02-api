@@ -34,8 +34,9 @@ from bs4 import BeautifulSoup
 from pypdf import PdfReader
 import json # New import
 
-from openai_llm import call_llm_summarize
-from ocr_utils import ocr_image # Added this import
+from .openai_llm import call_llm_summarize
+from .ocr_utils import ocr_image # Added this import
+import pytesseract
 import markdown
 
 # -------- 共通ユーティリティ --------
