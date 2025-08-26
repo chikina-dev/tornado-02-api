@@ -39,3 +39,13 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[tool.poetry]
+name = "tornado-02-api"
+version = "0.1.0"
+description = ""
+authors = ["your name <your@email.com>"]
+
+packages = [
+    { include = "python" }
+]
