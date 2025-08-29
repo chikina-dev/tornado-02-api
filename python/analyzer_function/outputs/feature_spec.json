@@ -1,0 +1,36 @@
+{
+  "features": [
+    {
+      "name": "total_score",
+      "definition": "Aggregated raw score for a user-skill pair before normalization."
+    },
+    {
+      "name": "score_0_100",
+      "definition": "Normalized skill score on a 0-100 scale."
+    },
+    {
+      "name": "confidence",
+      "definition": "Confidence in the score, based on volume and variety of evidence."
+    },
+    {
+      "name": "engagement_quality",
+      "definition": "Metric combining engagement and difficulty (engagement * difficulty). Indicates quality of interaction."
+    },
+    {
+      "name": "depth_rate",
+      "definition": "Ratio of pages with strong or weak depth keywords."
+    },
+    {
+      "name": "revisit_index",
+      "definition": "Log-transformed average visit count to pages for a skill."
+    },
+    {
+      "name": "difficulty_exposure",
+      "definition": "Average difficulty of pages viewed for a skill."
+    },
+    {
+      "name": "diversity",
+      "definition": "Shannon entropy of domains visited for a skill."
+    }
+  ]
+}

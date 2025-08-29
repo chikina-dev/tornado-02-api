@@ -27,6 +27,16 @@ dependencies = [
     "Markdown",
     "bcrypt<4.1",
     "APScheduler>=3.10.4",
+    "pandas",
+    "numpy",
+    "scikit-learn",
+    "pyyaml",
+    "matplotlib",
+    "seaborn",
+    "tabulate",
+    "requests",
+    "pyarrow",
+    "openpyxl",
 ]
 
 [dependency-groups]

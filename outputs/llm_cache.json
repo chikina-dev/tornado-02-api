@@ -1,0 +1,20 @@
+{
+  "https://www.clipstudio.net/how-to-draw": {
+    "difficulty_score": 2.5,
+    "specialization_level": "general",
+    "skill_categories": [
+      "digital_art",
+      "character_design",
+      "comics_&_manga"
+    ]
+  },
+  "https://www.pixiv.net/en/tags/講座/artworks": {
+    "difficulty_score": 2.0,
+    "specialization_level": "general",
+    "skill_categories": [
+      "digital_art",
+      "illustration",
+      "creative_ideas"
+    ]
+  }
+}

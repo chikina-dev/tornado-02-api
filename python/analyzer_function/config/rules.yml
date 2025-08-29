@@ -1,0 +1,61 @@
+# ドメインの信頼性に基づく階層
+tiers:
+  T1: 1.0   # 一次情報・公式・学術・官公庁
+  T2: 0.7   # 専門コミュニティ・ベンダー技術ブログ
+  T3: 0.4   # 一般ブログ・ニュース・まとめ
+
+# 特定ドメインのティアを上書き
+tier_overrides:
+  - domain: "arxiv.org"
+    tier: T1
+  - domain: "docs.python.org"
+    tier: T1
+  - domain: "w3.org"
+    tier: T1
+  - domain: "kubernetes.io"
+    tier: T1
+  - domain: "qiita.com"
+    tier: T3
+  - domain: "zenn.dev"
+    tier: T2
+  - domain: "en.wikipedia.org"
+    tier: T2
+  - domain: "www.soundraw.io"
+    tier: T2
+  - domain: "www.kaggle.com"
+    tier: T2
+  - domain: "medium.com"
+    tier: T3
+  - domain: "www.pixiv.net"
+    tier: T2
+
+# ページの専門性（深度）を測るキーワード (ルールベース評価でのみ使用)
+depth_keywords:
+  strong: ["api/", "/docs/", "/reference/", "/spec/", "/paper/", "/pdf", "technical-report", "advanced"]
+  weak:   ["guide", "tutorial", "howto", "introduction", "getting-started", "basics"]
+
+# スキルカテゴリと関連キーワードのマップ (ルールベース評価でのみ使用)
+skills:
+  NLP: ["bert", "transformer", "tokenizer", "huggingface", "nlp", "natural language processing"]
+  Python: ["python", "pandas", "numpy", "matplotlib", "scikit-learn", "fastapi", "django", "flask"]
+  Cloud: ["aws", "gcp", "azure", "iam", "s3", "bigquery", "lambda", "cloudformation", "terraform"]
+  Web: ["react", "next.js", "api gateway", "rest", "graphql", "html", "css", "javascript"]
+  Research: ["arxiv", "citation", "doi", "dataset", "ieee", "acm"]
+  MusicTheory: ["music theory", "harmony", "chords", "counterpoint", "atonality", "jazz", "modal"]
+  DataScience: ["scikit-learn", "pytorch", "tensorflow", "jupyter", "kaggle", "eda", "feature engineering"]
+  DevOps: ["docker", "kubernetes", "ci/cd", "jenkins", "ansible", "github actions"]
+  Illustration: ["photoshop", "illustrator", "procreate", "clip studio paint", "drawing", "art", "sketch"]
+
+# キーワードのマッチングに関する重み
+match:
+  exact_weight: 1.0
+  fuzzy_weight: 0.7
+
+# スコアリング計算に用いるパラメータ
+scoring:
+  depth_bonus_strong: 0.4
+  depth_bonus_weak: 0.2
+  read_time_default_sec: 40
+  read_ratio_cap: 2.0
+  engagement_w_read_ratio: 0.7
+  engagement_w_visits: 0.3
