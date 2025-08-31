@@ -61,10 +61,10 @@ uvicorn main:app --reload
 uv run pytest -q
 ```
 
-## API サーバーリファレンス
+## APIサーバーリファレンス
 
-user は Bearer 認証で判断
-url は<https://tornado2025.chigayuki.com>
+userはBearer認証で判断
+urlは<https://tornado2025.chigayuki.com>
 
 - [POST] /create
   - アカウント作成
