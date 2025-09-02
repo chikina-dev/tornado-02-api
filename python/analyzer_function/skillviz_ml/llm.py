@@ -1,5 +1,6 @@
 """
 (ML Version) Functions for evaluating page difficulty, category, and specialization using an LLM.
+(Caching has been removed as per user request.)
 """
 
 import os
@@ -17,21 +18,7 @@ except ImportError:
     print("Warning: `openai` is not installed. LLM evaluation will not work.")
     OpenAI = None
 
-CACHE_PATH = Path("outputs/llm_cache.json")
 MAX_WORKERS = 5
-
-def load_cache() -> Dict[str, Dict[str, Any]]:
-    if not CACHE_PATH.exists(): return {}
-    try:
-        with open(CACHE_PATH, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError):
-        return {}
-
-def save_cache(cache: Dict[str, Dict[str, Any]]):
-    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(CACHE_PATH, 'w', encoding='utf-8') as f:
-        json.dump(cache, f, indent=2, ensure_ascii=False)
 
 def _call_llm_api(url: str, content: str) -> Optional[Dict[str, Any]]:
     """Makes the actual API call to the LLM to get a structured evaluation with dynamic categories."""
@@ -43,9 +30,9 @@ def _call_llm_api(url: str, content: str) -> Optional[Dict[str, Any]]:
 
         prompt = f"""
         Analyze the web page content and return a JSON object with three keys:
-        1. "difficulty_score": A float from 1.0 (beginner) to 5.0 (expert).
-        2. "specialization_level": A string, one of "summary", "general", or "specialized".
-        3. "skill_categories": A list of 1-3 short, descriptive, and general skill tags (e.g., ["Python", "Asyncio"], ["Music Theory", "Jazz Harmony"]).
+        1. \"difficulty_score\": A float from 1.0 (beginner) to 5.0 (expert).
+        2. \"specialization_level\": A string, one of \"summary\", \"general\", or \"specialized\".
+        3. \"skill_categories\": A list of 1-3 short, descriptive, and general skill tags (e.g., [\"Python\", \"Asyncio\"], [\"Music Theory\", \"Jazz Harmony\"]).
 
         URL: {url}
         CONTENT: {truncated_content}
@@ -92,17 +79,16 @@ def _fetch_and_evaluate_url(url: str) -> Tuple[str, Optional[Dict[str, Any]]]:
 
 def evaluate_pages_with_llm(df: pd.DataFrame, rules: Dict[str, Any]) -> pd.DataFrame:
     print("Starting LLM-based page evaluation for difficulty, specialization, and dynamic skills...")
-    cache = load_cache()
     
-    urls_to_evaluate = df['url'].dropna().unique()
-    new_urls = [url for url in urls_to_evaluate if isinstance(url, str) and url not in cache]
+    urls_to_evaluate = [url for url in df['url'].dropna().unique() if isinstance(url, str)]
+    evaluations = {}
 
-    if not new_urls:
-        print("No new URLs to evaluate. Using cache for all URLs.")
+    if not urls_to_evaluate:
+        print("No valid URLs to evaluate.")
     else:
-        print(f"Found {len(new_urls)} new URLs to evaluate in parallel (max_workers={MAX_WORKERS})...")
+        print(f"Found {len(urls_to_evaluate)} URLs to evaluate in parallel (max_workers={MAX_WORKERS})...")
         with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            future_to_url = {executor.submit(_fetch_and_evaluate_url, url): url for url in new_urls}
+            future_to_url = {executor.submit(_fetch_and_evaluate_url, url): url for url in urls_to_evaluate}
             
             for future in concurrent.futures.as_completed(future_to_url):
                 url = future_to_url[future]
@@ -110,13 +96,12 @@ def evaluate_pages_with_llm(df: pd.DataFrame, rules: Dict[str, Any]) -> pd.DataF
                     _, evaluation = future.result()
                     if evaluation:
                         print(f"  - Evaluated: {url}")
-                        cache[url] = evaluation
+                        evaluations[url] = evaluation
                 except Exception as exc:
                     print(f"  - {url} generated an exception: {exc}")
 
-    print("All tasks complete. Saving cache...")
-    save_cache(cache)
+    print("All tasks complete.")
 
-    df['llm_evaluation'] = df['url'].map(cache)
+    df['llm_evaluation'] = df['url'].map(evaluations)
     print("LLM evaluation complete.")
     return df

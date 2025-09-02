@@ -2,16 +2,15 @@
 """
 Individual user skill analysis script.
 
-Calculates and displays:
-1. The total absolute skill scores for a given user over all time.
-2. The weekly growth of skill scores for that user.
+Phase 1: Evaluates page difficulty and content from user logs.
+Phase 2: Analyzes the evaluated data to score skills and track growth.
 """
 
 import argparse
 import pandas as pd
 from pathlib import Path
 import sys
-from datetime import datetime, timedelta
+from typing import Dict, Optional
 
 try:
     from .skillviz_ml import io, llm, scoring
@@ -19,53 +18,75 @@ except ImportError:
     print("Error: Could not import from 'skillviz_ml'. Make sure the package is structured correctly.")
     sys.exit(1)
 
-def analyze_user_progress(user_id: str, df_logs: pd.DataFrame, rules: dict):
+def evaluate_user_pages(user_id: str, df_logs: pd.DataFrame, rules: Dict) -> Optional[pd.DataFrame]:
     """
-    Performs and prints the absolute and weekly growth analysis for a user.
+    Phase 1: Filters logs for a user and evaluates their browsed pages using an LLM.
+    
+    This corresponds to: URL取得 -> 難易度評価
+    
+    Args:
+        user_id: The user to analyze.
+        df_logs: DataFrame containing all browsing logs.
+        rules: The configuration dictionary.
+
+    Returns:
+        A DataFrame with page evaluation data (including difficulty, skills, etc.),
+        or None if the user has no data. This is the "リスト出力".
     """
     df_user = df_logs[df_logs['user_id'] == user_id].copy()
     if df_user.empty:
         print(f"No data found for user_id: {user_id}")
-        return
+        return None
 
-    print(f"--- Analyzing progress for user: {user_id} ---")
+    print(f"--- Phase 1: Evaluating pages for user: {user_id} ---")
+    df_evaluated = llm.evaluate_pages_with_llm(df_user, rules)
+    print(f"Evaluation complete. {len(df_evaluated)} pages were processed.")
+    
+    return df_evaluated
+
+def analyze_user_skills(user_id: str, df_evaluated: pd.DataFrame, rules: Dict) -> str:
+    """
+    Phase 2: Analyzes the evaluated page data to calculate skill scores and weekly growth.
+
+    This corresponds to: URLとその点数を受け取り -> スキル評価
+
+    Args:
+        user_id: The user being analyzed.
+        df_evaluated: The DataFrame returned from the `evaluate_user_pages` function.
+        rules: The configuration dictionary.
+
+    Returns:
+        A formatted string containing the full analysis report.
+    """
+    analysis_report = [f"--- Phase 2: Analyzing Skill Profile for User: {user_id} ---"]
 
     # --- Part 1: Calculate Absolute Knowledge Amount (Total) ---
-    print("\n[1] Total Accumulated Skill Scores (Absolute Knowledge Amount)")
+    analysis_report.append("\n[1] Total Accumulated Skill Scores (Absolute Knowledge Amount)")
     
-    # Run evaluation and scoring on the user's entire history
-    df_evaluated_total = llm.evaluate_pages_with_llm(df_user, rules)
-    df_features_total = scoring.extract_features(df_evaluated_total, rules, llm_enabled=True)
+    df_features_total = scoring.extract_features(df_evaluated, rules, llm_enabled=True)
 
     if df_features_total.empty:
-        print("Could not extract any skill features for this user.")
+        analysis_report.append("Could not extract any skill features for this user.")
     else:
         total_scores = df_features_total[['skill', 'heuristic_score_sum']].sort_values(
             'heuristic_score_sum', ascending=False
         ).reset_index(drop=True)
-        print("Top skills based on entire browsing history:")
-        print(total_scores.to_markdown(index=False))
+        analysis_report.append("Top skills based on entire browsing history:")
+        analysis_report.append(total_scores.to_markdown(index=False))
 
     # --- Part 2: Calculate Weekly Growth Rate ---
-    print("\n[2] Weekly Skill Score Growth")
+    analysis_report.append("\n[2] Weekly Skill Score Growth")
     
-    df_user['timestamp'] = pd.to_datetime(df_user['timestamp'])
-    df_user['week'] = df_user['timestamp'].dt.to_period('W')
+    df_evaluated['timestamp'] = pd.to_datetime(df_evaluated['timestamp'])
+    df_evaluated['week'] = df_evaluated['timestamp'].dt.to_period('W')
     
     all_weekly_scores = []
+    unique_weeks = sorted(df_evaluated['week'].unique())
     
-    unique_weeks = sorted(df_user['week'].unique())
-    
-    print(f"Analyzing {len(unique_weeks)} weeks of activity...")
+    analysis_report.append(f"Analyzing {len(unique_weeks)} weeks of activity...")
 
     for week in unique_weeks:
-        print(f"  - Processing {week.start_time.date()} to {week.end_time.date()}...")
-        df_week = df_user[df_user['week'] == week]
-        
-        # We re-use the page evaluations from the total run to avoid re-calling the LLM
-        evaluated_urls = df_evaluated_total['url'].unique()
-        df_week_evaluated = df_evaluated_total[df_evaluated_total['url'].isin(df_week['url'].unique())]
-
+        df_week_evaluated = df_evaluated[df_evaluated['week'] == week]
         if df_week_evaluated.empty:
             continue
 
@@ -76,31 +97,23 @@ def analyze_user_progress(user_id: str, df_logs: pd.DataFrame, rules: dict):
             all_weekly_scores.append(df_features_week[['skill', 'week', 'heuristic_score_sum']])
 
     if not all_weekly_scores:
-        print("No weekly skill progression data could be calculated.")
-        return
+        analysis_report.append("No weekly skill progression data could be calculated.")
+    else:
+        df_growth = pd.concat(all_weekly_scores)
+        df_pivot = df_growth.pivot_table(
+            index='skill', columns='week', values='heuristic_score_sum', fill_value=0
+        )
+        df_growth_diff = df_pivot.diff(axis=1).fillna(0)
 
-    df_growth = pd.concat(all_weekly_scores)
-    
-    # Pivot to show skills as rows and weeks as columns
-    df_pivot = df_growth.pivot_table(
-        index='skill',
-        columns='week',
-        values='heuristic_score_sum',
-        fill_value=0
-    )
-    
-    # Calculate week-over-week growth
-    # The .diff(axis=1) calculates the difference between a column and the one before it
-    df_growth_diff = df_pivot.diff(axis=1).fillna(0)
+        analysis_report.append("\n--- Weekly Scores ---")
+        analysis_report.append("Each cell shows the total score accumulated in that week.")
+        analysis_report.append(df_pivot.to_markdown())
+        
+        analysis_report.append("\n--- Weekly Growth (Change from Previous Week) ---")
+        analysis_report.append("Each cell shows the change in score compared to the previous week.")
+        analysis_report.append(df_growth_diff.to_markdown())
 
-    print("\n--- Weekly Scores ---")
-    print("Each cell shows the total score accumulated in that week.")
-    print(df_pivot.to_markdown())
-    
-    print("\n--- Weekly Growth (Change from Previous Week) ---")
-    print("Each cell shows the change in score compared to the previous week.")
-    print(df_growth_diff.to_markdown())
-
+    return "\n".join(analysis_report)
 
 def main():
     parser = argparse.ArgumentParser(description="Analyze an individual user's skill knowledge and weekly growth.")
@@ -118,7 +131,15 @@ def main():
         print(f"Failed to load initial files. Aborting: {e}")
         return
 
-    analyze_user_progress(args.user, df_logs, rules)
+    # Phase 1: Evaluate pages and get the list of scores
+    df_evaluated_pages = evaluate_user_pages(args.user, df_logs, rules)
+
+    # Phase 2: Analyze skills from the evaluated pages
+    if df_evaluated_pages is not None and not df_evaluated_pages.empty:
+        analysis_result = analyze_user_skills(args.user, df_evaluated_pages, rules)
+        print(analysis_result)
+    else:
+        print(f"Could not generate an analysis for user {args.user} because no pages were evaluated.")
 
 
 if __name__ == "__main__":
