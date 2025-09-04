@@ -318,12 +318,11 @@ def aggregate_category_summary(
     system_hint_cat = "あなたは専門誌の編集者です。与えられたカテゴリに関する複数のテキストを統合し、構造化された詳細な要約を作成します。"
     user_task_prompt_cat = (
         f"以下のテキスト群はすべて「{category}」に関するものです。""これらの情報を統合し、重要なポイントや結論がわかるように、詳細な要約を作成してください。\n"
-        "出力は必ずHTML形式で、以下のように構造化してください:\n" \
-        "- 全体を `<div>` タグで囲みます。\n" \
-        f"- カテゴリ名を `<h3>{category}</h3>` として見出しにします。\n" \
-        "- 要約の主要な段落は `<p>` タグを使用します。\n" \
-        "- 重要なキーワードやリスト項目は `<ul>` と `<li>` を使って箇条書きにします。\n" \
-        "- `<html>`や`<body>`タグは含めないでください。"
+        "出力は必ずMarkdown形式で、以下のように構造化してください:\n" \
+        f"- カテゴリ名を `### {category}` のようにレベル3見出しにします。\n" \
+        "- 要約の主要な段落は通常のテキストとして記述します。\n" \
+        "- 重要なキーワードやリスト項目は `-` を使った箇条書きにします。\n" \
+        "- 全体を囲むタグなどは不要です。"
     )
     return call_llm_summarize(
         text=category_text,
@@ -345,7 +344,7 @@ async def summarize_multiple_inputs(
 ) -> str:
     """
     複数のソースを処理し、集約されたサマリーを返す。
-    --aggregateが指定されている場合、カテゴリ別のHTMLサマリーを生成する。
+    --aggregateが指定されている場合、カテゴリ別のMarkdownサマリーを生成する。
     そうでない場合は、単純な連結テキストを返す（ただし現状はCLIからしか呼ばれない想定）。
 
     戻り値: (aggregated_summary)
@@ -366,8 +365,8 @@ async def summarize_multiple_inputs(
         all_summaries_text = "\n\n---\n\n".join([res.get("summary", "") for res in source_results if res.get("summary")])
         return all_summaries_text
 
-    # --aggregate が指定されている場合、カテゴリ別のHTML要約を生成
-    print("[STATUS] カテゴリ別の集約要約をHTML形式で生成中...")
+    # --aggregate が指定されている場合、カテゴリ別のMarkdown要約を生成
+    print("[STATUS] カテゴリ別の集約要約をMarkdown形式で生成中...")
     summaries_by_category: Dict[str, List[str]] = {}
     for res in source_results:
         cat = res.get("category") or "カテゴリなし"
@@ -375,18 +374,18 @@ async def summarize_multiple_inputs(
             summaries_by_category[cat] = []
         summaries_by_category[cat].append(res.get("summary", ""))
 
-    html_parts = []
+    md_parts = []
     for category, summaries in summaries_by_category.items():
-        cat_summary_html = aggregate_category_summary(
+        cat_summary_md = aggregate_category_summary(
             category=category,
             summaries=summaries,
             api_key=api_key,
             model=model,
         )
-        if cat_summary_html:
-            html_parts.append(cat_summary_html)
+        if cat_summary_md:
+            md_parts.append(cat_summary_md)
 
-    aggregated_summary = "\n".join(html_parts)
+    aggregated_summary = "\n\n".join(md_parts)
     print("[STATUS] カテゴリ別集約要約の生成が完了しました。")
 
     print("[STATUS] 全ての処理が完了しました。")
