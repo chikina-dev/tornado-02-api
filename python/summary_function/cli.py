@@ -55,7 +55,7 @@ def is_url(s: str) -> bool:
 
 def sanitize_filename(name: str) -> str:
     # \w を正しく使う（元コードはバックスラッシュを二重にしていた）
-    safe = re.sub(r"[^\w\-.]+", "_", name.strip())
+    safe = re.sub(r"[^\\w\-.]+", "_", name.strip())
     return safe[:200] if len(safe) > 200 else safe
 
 
@@ -216,6 +216,49 @@ def suggest_category(text: str, api_key: str, model: str) -> str:
         print(f"[WARN] カテゴリ推薦中にエラー: {e}")
         return ""
 
+def extract_categorical_keywords(text: str, api_key: str, model: str) -> Dict[str, List[str]]:
+    try:
+        system_hint = "あなたは、テキストを深く理解し、内容を構造化して整理することに特化した高度なAIアナリストです。"
+        user_task_prompt = ('''
+            以下のテキストを分析し、次の2つのステップを実行してください。
+            ステップ1: このテキストに関連する主要なカテゴリを特定してください。
+            ステップ2: 特定した各カテゴリについて、そのカテゴリに直接関連する専門用語をテキスト中から5個ずつ抽出してください。
+
+            結果は、必ず以下のJSON形式で出力してください。カテゴリ名がキー、専門用語のリストが値となります。
+
+            {
+              "カテゴリ名1": ["専門用語1", "専門用語2", "専門用語3", "専門用語4", "専門用語5"],
+              "カテゴリ名2": ["専門用語A", "専門用語B", "専門用語C", "専門用語D", "専門用語E"]
+            }
+
+            他の説明や前置きは一切含めず、JSONオブジェクトのみを出力してください。
+            ''')
+
+        json_output = call_llm_summarize(
+            text=text[:6000],
+            model=model,
+            system_hint=system_hint,
+            user_task_prompt=user_task_prompt,
+            api_key=api_key,
+        )
+
+        match = re.search(r'\{.*\}', json_output, re.DOTALL)
+        if match:
+            json_str = match.group(0)
+            data = json.loads(json_str)
+            if isinstance(data, dict):
+                return data
+        
+        print(f"[WARN] カテゴリ別キーワード抽出時のJSONパースに失敗。出力: {json_output}")
+        return {}
+
+    except json.JSONDecodeError as e:
+        print(f"[WARN] カテゴリ別キーワード抽出時のJSONデコードエラー: {e}")
+        return {}
+    except Exception as e:
+        print(f"[WARN] カテゴリ別キーワード抽出中にエラー: {e}")
+        return {}
+
 
 # -------- 並列処理オーケストレーション --------
 async def _process_one_source_fully(args: tuple) -> Dict[str, Any]:
@@ -259,6 +302,36 @@ async def _process_one_source_fully(args: tuple) -> Dict[str, Any]:
         print(f"[ERROR] ソース処理中に致命的なエラー: {src} ({e})")
         return {"id": source_id, "name": src, "error": str(e)}
 
+def aggregate_category_summary(
+    category: str,
+    summaries: List[str],
+    api_key: str,
+    model: str,
+) -> str:
+    """
+    カテゴリごとに集約された要約を生成する。
+    """
+    if not summaries:
+        return ""
+
+    category_text = "\n\n---\n\n".join(summaries)
+    system_hint_cat = "あなたは専門誌の編集者です。与えられたカテゴリに関する複数のテキストを統合し、構造化された詳細な要約を作成します。"
+    user_task_prompt_cat = (
+        f"以下のテキスト群はすべて「{category}」に関するものです。""これらの情報を統合し、重要なポイントや結論がわかるように、詳細な要約を作成してください。\n"
+        "出力は必ずMarkdown形式で、以下のように構造化してください:\n" \
+        f"- カテゴリ名を `### {category}` のようにレベル3見出しにします。\n" \
+        "- 要約の主要な段落は通常のテキストとして記述します。\n" \
+        "- 重要なキーワードやリスト項目は `-` を使った箇条書きにします。\n" \
+        "- 全体を囲むタグなどは不要です。"
+    )
+    return call_llm_summarize(
+        text=category_text,
+        model=model,
+        system_hint=system_hint_cat,
+        user_task_prompt=user_task_prompt_cat,
+        api_key=api_key,
+    )
+
 
 async def summarize_multiple_inputs(
     srcs: List[str],
@@ -271,7 +344,7 @@ async def summarize_multiple_inputs(
 ) -> str:
     """
     複数のソースを処理し、集約されたサマリーを返す。
-    --aggregateが指定されている場合、カテゴリ別のHTMLサマリーを生成する。
+    --aggregateが指定されている場合、カテゴリ別のMarkdownサマリーを生成する。
     そうでない場合は、単純な連結テキストを返す（ただし現状はCLIからしか呼ばれない想定）。
 
     戻り値: (aggregated_summary)
@@ -292,8 +365,8 @@ async def summarize_multiple_inputs(
         all_summaries_text = "\n\n---\n\n".join([res.get("summary", "") for res in source_results if res.get("summary")])
         return all_summaries_text
 
-    # --aggregate が指定されている場合、カテゴリ別のHTML要約を生成
-    print("[STATUS] カテゴリ別の集約要約をHTML形式で生成中...")
+    # --aggregate が指定されている場合、カテゴリ別のMarkdown要約を生成
+    print("[STATUS] カテゴリ別の集約要約をMarkdown形式で生成中...")
     summaries_by_category: Dict[str, List[str]] = {}
     for res in source_results:
         cat = res.get("category") or "カテゴリなし"
@@ -301,32 +374,18 @@ async def summarize_multiple_inputs(
             summaries_by_category[cat] = []
         summaries_by_category[cat].append(res.get("summary", ""))
 
-    html_parts = []
+    md_parts = []
     for category, summaries in summaries_by_category.items():
-        if not summaries:
-            continue
-        category_text = "\n\n---\n\n".join(summaries)
-        system_hint_cat = "あなたは専門誌の編集者です。与えられたカテゴリに関する複数のテキストを統合し、構造化された詳細な要約を作成します。"
-        user_task_prompt_cat = (
-            f"以下のテキスト群はすべて「{category}」に関するものです。"
-            "これらの情報を統合し、重要なポイントや結論がわかるように、詳細な要約を作成してください。\n"
-            "出力は必ずHTML形式で、以下のように構造化してください:\n"
-            "- 全体を `<div>` タグで囲みます。\n"
-            f"- カテゴリ名を `<h3>{category}</h3>` として見出しにします。\n"
-            "- 要約の主要な段落は `<p>` タグを使用します。\n"
-            "- 重要なキーワードやリスト項目は `<ul>` と `<li>` を使って箇条書きにします。\n"
-            "- `<html>`や`<body>`タグは含めないでください。"
-        )
-        cat_summary_html = call_llm_summarize(
-            text=category_text,
-            model=model,
-            system_hint=system_hint_cat,
-            user_task_prompt=user_task_prompt_cat,
+        cat_summary_md = aggregate_category_summary(
+            category=category,
+            summaries=summaries,
             api_key=api_key,
+            model=model,
         )
-        html_parts.append(cat_summary_html)
+        if cat_summary_md:
+            md_parts.append(cat_summary_md)
 
-    aggregated_summary = "\n".join(html_parts)
+    aggregated_summary = "\n\n".join(md_parts)
     print("[STATUS] カテゴリ別集約要約の生成が完了しました。")
 
     print("[STATUS] 全ての処理が完了しました。")
