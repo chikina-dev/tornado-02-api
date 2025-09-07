@@ -34,9 +34,11 @@ import pytesseract
 try:
     from .openai_llm import call_llm_summarize
     from .ocr_utils import ocr_image
+    from ..analyzer_function.skillviz_ml.llm import evaluate_text_content_with_llm
 except ImportError:
     from openai_llm import call_llm_summarize
     from ocr_utils import ocr_image
+    from analyzer_function.skillviz_ml.llm import evaluate_text_content_with_llm
 
 # -------- 共通ユーティリティ --------
 IMG_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp'}
@@ -266,19 +268,31 @@ async def _process_one_source_fully(args: tuple) -> Dict[str, Any]:
     source_id = f"source-{i+1}"
     print(f"[STATUS]   - ソース {i+1} ({src[:50]}...) の処理を開始")
     try:
+        source_type = "unknown" # Initialize source_type
         if is_url(src):
-            _, text = await fetch_url(src, ocr_lang=ocr_lang)
+            source_type, text = await fetch_url(src, ocr_lang=ocr_lang)
             source_name = src
         else:
             p = Path(src)
             if not p.exists():
                 raise FileNotFoundError(f"Not found: {src}")
             loop = asyncio.get_running_loop()
-            _, text = await loop.run_in_executor(None, read_local, p, ocr_lang)
+            source_type, text = await loop.run_in_executor(None, read_local, p, ocr_lang)
             source_name = p.name
 
         if not text or not text.strip():
             return {"id": source_id, "name": source_name, "error": "テキスト抽出不可"}
+
+        llm_evaluation = None
+        if source_type in ["image", "pdf"]:
+            print(f"[STATUS]   - ソース {i+1} ({src[:50]}...) のLLM評価を開始")
+            llm_evaluation = await asyncio.get_running_loop().run_in_executor(
+                None, evaluate_text_content_with_llm, text, api_key
+            )
+            if llm_evaluation:
+                print(f"[STATUS]   - ソース {i+1} ({src[:50]}...) のLLM評価を完了")
+            else:
+                print(f"[WARN]   - ソース {i+1} ({src[:50]}...) のLLM評価に失敗")
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as inner_executor:
             loop = asyncio.get_running_loop()
@@ -296,6 +310,8 @@ async def _process_one_source_fully(args: tuple) -> Dict[str, Any]:
                 "summary": summary,
                 "category": category,
             }
+            if llm_evaluation:
+                result["llm_evaluation"] = llm_evaluation
         print(f"[STATUS]   - ソース {i+1} ({src[:50]}...) の処理を完了")
         return result
     except Exception as e:

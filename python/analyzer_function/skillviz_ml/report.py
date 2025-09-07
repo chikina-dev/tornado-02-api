@@ -7,11 +7,14 @@ from typing import Dict, Any, Optional
 import pandas as pd
 from datetime import datetime
 
+from python.summary_function.openai_llm import call_llm_verbalize_numbers
+
 def write_report(
     run_metadata: Dict[str, Any],
     df_user_skill: Optional[pd.DataFrame] = None,
     output_path: str = "",
-    feedback_text: Optional[str] = None
+    feedback_text: Optional[str] = None,
+    api_key: Optional[str] = None
 ) -> str:
     """Generates a summary of the execution in Markdown format."""
     
@@ -29,6 +32,12 @@ def write_report(
         report.append("\n## ユーザースキルスコア Top 5 (全体)")
         top_5 = df_user_skill.nlargest(5, 'total_score')
         report.append(top_5[[ 'user_id', 'skill', 'total_score', 'confidence']].to_markdown(index=False))
+        
+        # LLMによる言語化
+        if api_key:
+            verbalized_top_5 = call_llm_verbalize_numbers(top_5, api_key=api_key)
+            report.append("\n### LLMによるTop 5の分析")
+            report.append(verbalized_top_5)
 
         report.append("\n## 主要指標（全体平均）")
         # **MODIFIED**: Ensure authority_ratio is not here and engagement_quality is.
@@ -49,6 +58,12 @@ def write_report(
             'confidence': '信頼度'
         })
         report.append(kpi_df.to_markdown())
+
+        # LLMによる言語化
+        if api_key:
+            verbalized_kpi = call_llm_verbalize_numbers(kpi_df, api_key=api_key)
+            report.append("\n### LLMによる主要指標の分析")
+            report.append(verbalized_kpi)
     else:
         report.append("\n## 結果\nスキルスコアは生成されませんでした。")
 
