@@ -1,22 +1,53 @@
 # Environment variables
 .env
+.env.*
 
-# Python
-.python-version
-.venv/
+# Python cache and artifacts
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.python-version
+
+# Build/distribution
 build/
 dist/
 wheels/
-*.egg-info
+*.egg-info/
+*.egg
 
 # Virtual environments
-.venv
+.venv/
+venv/
+env/
 
-# upload
+# Test/coverage caches
+.pytest_cache/
+.coverage*
+htmlcov/
+.nox/
+.tox/
+
+# Tools caches
+.mypy_cache/
+.ruff_cache/
+
+# IDE/editor
+.DS_Store
+.idea/
+.vscode/
+
+# Application logs and temp downloads
+logs/
+.tmp_downloads/
+
+# Uploads and generated artifacts
 uploaded_files/
 python/cli_summary_output.html
 
-# Output files
-*.md
+# Note: Do NOT ignore all Markdown files. Remove any '*.md' pattern that was hiding docs like README.md.
+
+python/json/
+
+.tmp_*/

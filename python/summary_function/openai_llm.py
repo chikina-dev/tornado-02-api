@@ -1,9 +1,11 @@
+import json
 import os
 import time
 import random
-from typing import Optional
+from typing import Any, Optional
 
 from openai import OpenAI
+import pandas as pd
 
 # .env 読み込み（.env を使わない場合は不要）
 try:

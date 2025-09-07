@@ -1,47 +1,49 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
-from datetime import timedelta
+"""ユーザー関連エンドポイント。"""
+
 import datetime
+import uuid
+from datetime import timedelta
+
+from fastapi import APIRouter, Depends, Query, status
+from errors import bad_request, unauthorized
 
 from database import database
+from dependencies import get_current_user
 from models import (
+    CreateAccountResponse,
+    RootResponse,
+    RefreshRequest,
+    RefreshResponse,
+    TokenResponse,
     UserCreate,
     UserLogin,
     UserProfile,
     UserProfileActivity,
-    CreateAccountResponse,
-    TokenResponse,
-    RefreshRequest,
-    RefreshResponse,
-    users,
-    files,
-    search_histories,
     file_upload_webhooks,
+    files,
     refresh_tokens,
+    search_histories,
+    users,
 )
-import uuid
-from dependencies import get_current_user
 from security import (
-    create_access_token,
-    verify_password,
-    get_password_hash,
     ACCESS_TOKEN_EXPIRE_MINUTES,
     REFRESH_TOKEN_EXPIRE_DAYS,
+    create_access_token,
     generate_refresh_token,
+    get_password_hash,
     hash_token,
+    verify_password,
 )
-from utils.datetime_utils import naive_utc_now
+from utils.datetime_utils import naive_utc_now, month_range
 
 router = APIRouter(tags=["users"])
 
-# アカウント作成
-@router.post("/create", response_model=CreateAccountResponse)
-async def create_account(user: UserCreate):
+
+@router.post("/create", response_model=CreateAccountResponse, operation_id="createAccount")
+async def create_account(user: UserCreate) -> CreateAccountResponse:
     query = users.select().where(users.c.email == user.email)
     if await database.fetch_one(query):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Email already registered",
-        )
+        bad_request("Email already registered")
     now = naive_utc_now()
     hashed_password = get_password_hash(user.password)
     query = users.insert().values(email=user.email, hashed_password=hashed_password, created_at=now)
@@ -54,25 +56,20 @@ async def create_account(user: UserCreate):
             created_at=now,
         )
     )
-    return {
-        "message": "Account created successfully",
-        "user_id": user_id,
-        "email": user.email,
-        "webhooks": {"file_external_id": file_external_id},
-    }
+    return CreateAccountResponse(
+        message="Account created successfully",
+        user_id=user_id,
+        email=user.email,
+        webhooks={"file_external_id": file_external_id},
+    )
 
-# ログイン
-@router.post("/login", response_model=TokenResponse)
-async def login(user: UserLogin):
+@router.post("/login", response_model=TokenResponse, operation_id="login")
+async def login(user: UserLogin) -> TokenResponse:
     query = users.select().where(users.c.email == user.email)
     db_user = await database.fetch_one(query)
 
     if not db_user or not verify_password(user.password, db_user["hashed_password"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        unauthorized("Incorrect email or password", headers={"WWW-Authenticate": "Bearer"})
 
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
@@ -92,26 +89,26 @@ async def login(user: UserLogin):
         )
     )
 
-    return {"access_token": access_token, "token_type": "bearer", "refresh_token": rt}
+    return TokenResponse(access_token=access_token, token_type="bearer", refresh_token=rt)
 
 
-@router.post("/refresh", response_model=RefreshResponse)
-async def refresh_token(payload: RefreshRequest):
+@router.post("/refresh", response_model=RefreshResponse, operation_id="refreshToken")
+async def refresh_token(payload: RefreshRequest) -> RefreshResponse:
     token = payload.refresh_token
     token_h = hash_token(token)
     row = await database.fetch_one(
         refresh_tokens.select().where(refresh_tokens.c.token_hash == token_h)
     )
     if not row or row["revoked"]:
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+        unauthorized("Invalid refresh token")
     now = naive_utc_now()
     if row["expires_at"] < now:
-        raise HTTPException(status_code=401, detail="Refresh token expired")
+        unauthorized("Refresh token expired")
 
     # Fetch user
     user_row = await database.fetch_one(users.select().where(users.c.id == row["user_id"]))
     if not user_row:
-        raise HTTPException(status_code=401, detail="User not found")
+        unauthorized("User not found")
 
     access_token_expires = datetime.timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
@@ -136,11 +133,10 @@ async def refresh_token(payload: RefreshRequest):
             revoked=False,
         )
     )
-    return {"access_token": access_token, "refresh_token": new_rt}
+    return RefreshResponse(access_token=access_token, refresh_token=new_rt)
 
-
-@router.post("/logout")
-async def logout(payload: RefreshRequest):
+@router.post("/logout", response_model=RootResponse, operation_id="logout")
+async def logout(payload: RefreshRequest) -> RootResponse:
     token_h = hash_token(payload.refresh_token)
     res = await database.execute(
         refresh_tokens.update()
@@ -148,27 +144,23 @@ async def logout(payload: RefreshRequest):
         .values(revoked=True)
     )
     # No need to expose details; return ok regardless
-    return {"message": "ok"}
+    return RootResponse(message="ok")
 
-@router.get("/profile", response_model=UserProfileActivity)
+@router.get("/profile", response_model=UserProfileActivity, operation_id="getProfile")
 async def get_profile(
     month: str | None = Query(None, description="YYYY-MM"),
     current_user: UserProfile = Depends(get_current_user),
-):
+) -> UserProfileActivity:
     now = naive_utc_now()
     if month:
         try:
             target_year, target_month = map(int, month.split("-"))
         except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid month format. Use YYYY-MM")
+            bad_request("Invalid month format. Use YYYY-MM")
     else:
         target_year, target_month = now.year, now.month
-    # 月初・翌月初
-    month_start = datetime.datetime(target_year, target_month, 1)
-    if target_month == 12:
-        next_month_start = datetime.datetime(target_year + 1, 1, 1)
-    else:
-        next_month_start = datetime.datetime(target_year, target_month + 1, 1)
+    # 対象月の範囲
+    month_start, next_month_start = month_range(target_year, target_month)
 
     # 集計クエリ (日単位)
     file_q = (

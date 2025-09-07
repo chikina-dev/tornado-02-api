@@ -1,33 +1,38 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+"""タグ関連エンドポイント。"""
+
 from typing import List
+
+from fastapi import APIRouter, Depends, status
+from errors import not_found
+
 from database import database
+from dependencies import get_current_user
 from models import (
-    UserProfile,
     Tag,
-    tags,
-    search_history_tags,
-    search_histories,
+    UserProfile,
     daily_summaries,
     daily_summary_tags,
+    search_histories,
+    search_history_tags,
+    tags,
 )
-from dependencies import get_current_user
 
 router = APIRouter(prefix="/tags", tags=["tags"])
 
-# タグ一覧取得
-@router.get("/", response_model=List[Tag])
-async def list_tags(current_user: UserProfile = Depends(get_current_user)):
+@router.get("/", response_model=List[Tag], operation_id="listTags")
+async def list_tags(current_user: UserProfile = Depends(get_current_user)) -> List[Tag]:
     query = tags.select().where(tags.c.user_id == current_user.id).order_by(tags.c.name.asc())
     rows = await database.fetch_all(query)
     return [Tag(id=r["id"], name=r["name"]) for r in rows]
 
-# タグを元にした検索
-@router.get("/search_history/{search_history_id}", response_model=List[Tag])
-async def list_tags_for_search_history(search_history_id: int, current_user: UserProfile = Depends(get_current_user)):
+@router.get("/search_history/{search_history_id}", response_model=List[Tag], operation_id="listTagsForSearchHistory")
+async def list_tags_for_search_history(
+    search_history_id: int, current_user: UserProfile = Depends(get_current_user)
+) -> List[Tag]:
     sh_query = search_histories.select().where(search_histories.c.id == search_history_id, search_histories.c.user_id == current_user.id)
     sh = await database.fetch_one(sh_query)
     if not sh:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Search history not found")
+        not_found("Search history not found")
     join_q = (
         tags.join(search_history_tags, tags.c.id == search_history_tags.c.tag_id)
     )
@@ -39,9 +44,8 @@ async def list_tags_for_search_history(search_history_id: int, current_user: Use
     rows = await database.fetch_all(query)
     return [Tag(id=r["id"], name=r["name"]) for r in rows]
 
-# 日次要約のタグ一覧
-@router.get("/daily/{date}", response_model=List[Tag])
-async def list_tags_for_daily(date: str, current_user: UserProfile = Depends(get_current_user)):
+@router.get("/daily/{date}", response_model=List[Tag], operation_id="listTagsForDaily")
+async def list_tags_for_daily(date: str, current_user: UserProfile = Depends(get_current_user)) -> List[Tag]:
     ds = await database.fetch_one(
         daily_summaries.select().where(
             (daily_summaries.c.user_id == current_user.id) & (daily_summaries.c.date == date)

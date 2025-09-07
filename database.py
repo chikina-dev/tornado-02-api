@@ -1,22 +1,23 @@
-import os
-from databases import Database
-from sqlalchemy import create_engine, MetaData
-from dotenv import load_dotenv
+"""DB 接続の薄いラッパー（databases/SQLAlchemy）。"""
 
-# Load environment variables from .env file
+import os
+
+from databases import Database
+from dotenv import load_dotenv
+from sqlalchemy import MetaData, create_engine
+
+# .env 読み込み（存在する場合のみ）
 load_dotenv()
 
-# Get database URL from environment variable
 DATABASE_URL = os.getenv("DATABASE_URL")
-
 if not DATABASE_URL:
     raise ValueError("No DATABASE_URL environment variable set")
 
-# Database instance for query execution
+# 非同期クエリ用
 database = Database(DATABASE_URL)
 
-# SQLAlchemy engine for table creation
+# テーブル作成用（同期）
 engine = create_engine(DATABASE_URL)
 
-# Metadata instance to bind to the engine
+# メタデータ（テストで create_all に使用）
 metadata = MetaData()

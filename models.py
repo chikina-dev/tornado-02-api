@@ -1,7 +1,10 @@
+"""PydanticモデルとSQLAlchemyテーブル定義（最小限）。"""
+
 import datetime
+from typing import List, Optional, Any, Dict
+
 import sqlalchemy
-from pydantic import BaseModel, EmailStr
-from typing import Optional, List
+from pydantic import BaseModel, EmailStr, RootModel
 
 class UserCreate(BaseModel):
     email: EmailStr
@@ -61,7 +64,7 @@ class FilesListResponse(BaseModel):
 class FileBinaryResponse(BaseModel):
     file_id: int
     filename: str
-    content_base64: str  # Base64でエンコードされたファイル
+    content_base64: str  # Base64 文字列
     content_type: Optional[str] = None
     created_at: Optional[datetime.datetime] = None
 
@@ -108,6 +111,16 @@ class TestEndpointResponse(BaseModel):
     date: Optional[str] = None
     tags: List[str]
 
+class DailySummaryResponse(BaseModel):
+    date: str  # YYYY-MM-DD
+    markdown: str
+    created_at: datetime.datetime
+    tags: List[str]
+
+class AnyDictModel(RootModel[Dict[str, Any]]):
+    """任意のJSON辞書を包む薄い型。"""
+    pass
+
 class Tag(BaseModel):
     id: int
     name: str
@@ -115,7 +128,7 @@ class Tag(BaseModel):
 class FileUploadWebhook(BaseModel):
     id: int
     user_id: int
-    external_id: str  # URL等から取得したID
+    external_id: str  # 外部ID（URLなど）
     created_at: datetime.datetime
     last_executed_at: Optional[datetime.datetime] = None
 
@@ -125,6 +138,41 @@ class HistoryPayload(BaseModel):
     description: str | None = None
     timestamp: datetime.datetime | None = None
     external_id: str | None = None
+
+class AdminRegenerateResponse(BaseModel):
+    user_id: int
+    date: str
+    file_summaries: int
+    history_summaries: int
+    daily: bool
+    tags: int
+    links: Optional[int] = None
+    # Optional extras when triggering URL evaluation and skill analysis
+    url_evaluated_new: Optional[int] = None
+    skills_upserted: Optional[int] = None
+    feedback: Optional[str] = None
+
+class AnalysisResponse(BaseModel):
+    user_id: int
+    date: str
+    feedback: str
+    url_count: int
+    avg_difficulty: Dict[str, float | None]
+    top_categories: List[str]
+
+class EvaluateUrlsResponse(BaseModel):
+    evaluated: int
+    users: int
+    by_user: Dict[int, int]
+
+class EpsonPrintJobResponse(BaseModel):
+    job: Dict[str, Any]
+    printed: bool
+
+class FeedbackResponse(BaseModel):
+    user_id: int
+    date: str
+    feedback: str
 
 metadata = sqlalchemy.MetaData()
 
@@ -175,6 +223,18 @@ daily_summaries = sqlalchemy.Table(
     sqlalchemy.Column("markdown", sqlalchemy.Text, nullable=False),
     sqlalchemy.Column("created_at", sqlalchemy.DateTime, default=datetime.datetime.utcnow, nullable=False),
     sqlalchemy.UniqueConstraint("user_id", "date", name="uq_user_date_daily_summary"),
+)
+
+# 1日単位の分析フィードバック本文（任意保存）
+daily_feedback = sqlalchemy.Table(
+    "daily_feedback",
+    metadata,
+    sqlalchemy.Column("id", sqlalchemy.Integer, primary_key=True, index=True),
+    sqlalchemy.Column("user_id", sqlalchemy.Integer, sqlalchemy.ForeignKey("users.id"), index=True, nullable=False),
+    sqlalchemy.Column("date", sqlalchemy.Date, nullable=False),
+    sqlalchemy.Column("feedback", sqlalchemy.Text, nullable=False),
+    sqlalchemy.Column("created_at", sqlalchemy.DateTime, default=datetime.datetime.utcnow, nullable=False),
+    sqlalchemy.UniqueConstraint("user_id", "date", name="uq_user_date_daily_feedback"),
 )
 
 tags = sqlalchemy.Table(
@@ -250,4 +310,32 @@ refresh_tokens = sqlalchemy.Table(
     sqlalchemy.Column("created_at", sqlalchemy.DateTime, default=datetime.datetime.utcnow, nullable=False),
     sqlalchemy.Column("expires_at", sqlalchemy.DateTime, nullable=False),
     sqlalchemy.Column("revoked", sqlalchemy.Boolean, default=False, nullable=False),
+)
+
+# ドメイン単位のLLM評価キャッシュ（再呼び出し抑制）
+url_evaluations = sqlalchemy.Table(
+    "url_evaluations",
+    metadata,
+    sqlalchemy.Column("id", sqlalchemy.Integer, primary_key=True, index=True),
+    # `url` 列にはドメイン文字列を格納（例: "example.com"）
+    sqlalchemy.Column("url", sqlalchemy.String, nullable=False, unique=True),
+    sqlalchemy.Column("difficulty_score", sqlalchemy.Float, nullable=True),
+    sqlalchemy.Column("specialization_level", sqlalchemy.String, nullable=True),
+    sqlalchemy.Column("skill_categories", sqlalchemy.JSON, nullable=True),
+    sqlalchemy.Column("evaluated_at", sqlalchemy.DateTime, default=datetime.datetime.utcnow, nullable=False),
+)
+
+# ユーザー別スキル特徴量の集計（表示/LLM入力用）
+user_skill_features = sqlalchemy.Table(
+    "user_skill_features",
+    metadata,
+    sqlalchemy.Column("id", sqlalchemy.Integer, primary_key=True, index=True),
+    sqlalchemy.Column("user_id", sqlalchemy.Integer, sqlalchemy.ForeignKey("users.id"), index=True, nullable=False),
+    sqlalchemy.Column("skill", sqlalchemy.String, index=True, nullable=False),
+    sqlalchemy.Column("heuristic_score_sum", sqlalchemy.Float, nullable=True),
+    sqlalchemy.Column("mean_difficulty", sqlalchemy.Float, nullable=True),
+    sqlalchemy.Column("n_pages", sqlalchemy.Integer, nullable=True),
+    sqlalchemy.Column("mean_engagement", sqlalchemy.Float, nullable=True),
+    sqlalchemy.Column("updated_at", sqlalchemy.DateTime, default=datetime.datetime.utcnow, nullable=False),
+    sqlalchemy.UniqueConstraint("user_id", "skill", name="uq_user_skill_feature"),
 )

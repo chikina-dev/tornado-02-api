@@ -1,24 +1,29 @@
-from fastapi import APIRouter, Depends, HTTPException
+"""サマリー取得エンドポイント。"""
+
 import datetime
 
+from fastapi import APIRouter, Depends
+from errors import bad_request, not_found
+
 from database import database
-from models import UserProfile, daily_summaries, tags, daily_summary_tags
 from dependencies import get_current_user
+from models import DailySummaryResponse, AnalysisResponse, UserProfile, daily_summaries, daily_summary_tags, tags
+from services.daily_summary import analyze_day as analyze_service
 
-router = APIRouter(prefix="/summaries", tags=["summaries"])
+router = APIRouter(tags=["summaries"])  # No prefix; absolute paths
 
 
-@router.get("/{year:int}/{month:int}/{day:int}")
+@router.get("/summaries/{year:int}/{month:int}/{day:int}", response_model=DailySummaryResponse, operation_id="getDailySummaryByDate")
 async def get_daily_summary_by_md(
     year: int,
     month: int,
     day: int,
     current_user: UserProfile = Depends(get_current_user),
-):
+) -> DailySummaryResponse:
     try:
         target_date = datetime.date(year, month, day)
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid month/day")
+        bad_request("Invalid month/day")
 
     row = await database.fetch_one(
         daily_summaries.select().where(
@@ -26,7 +31,7 @@ async def get_daily_summary_by_md(
         )
     )
     if not row:
-        raise HTTPException(status_code=404, detail="Summary not found")
+        not_found("Summary not found")
     # fetch tags for this daily summary
     join_q = tags.join(daily_summary_tags, tags.c.id == daily_summary_tags.c.tag_id)
     trows = await database.fetch_all(
@@ -37,9 +42,25 @@ async def get_daily_summary_by_md(
         )
         .order_by(tags.c.name.asc())
     )
-    return {
-        "date": target_date.isoformat(),
-        "markdown": row["markdown"],
-        "created_at": row["created_at"],
-        "tags": [r["name"] for r in trows],
-    }
+    return DailySummaryResponse(
+        date=target_date.isoformat(),
+        markdown=row["markdown"],
+        created_at=row["created_at"],
+        tags=[r["name"] for r in trows],
+    )
+
+
+@router.get("/analysis/{year:int}/{month:int}/{day:int}", response_model=AnalysisResponse, operation_id="getDailyAnalysisByDate")
+async def get_daily_analysis_by_date(
+    year: int,
+    month: int,
+    day: int,
+    current_user: UserProfile = Depends(get_current_user),
+) -> AnalysisResponse:
+    try:
+        target_date = datetime.date(year, month, day)
+    except Exception:
+        bad_request("Invalid month/day")
+
+    result = await analyze_service(current_user.id, target_date)
+    return AnalysisResponse(user_id=current_user.id, date=target_date.isoformat(), **result)
