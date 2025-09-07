@@ -68,3 +68,46 @@ def call_llm_summarize(
         return resp.choices[0].message.content.strip()
 
     return with_retries(_run)
+
+
+def call_llm_verbalize_numbers(
+    data: Any,
+    model: str = "gpt-4o-mini",
+    api_key: Optional[str] = None
+) -> str:
+    """
+    数値データをLLMに渡して自然言語で説明させる関数。
+    """
+    key = api_key or os.getenv("OPENAI_API_KEY")
+    if not key:
+        raise RuntimeError("OPENAI_API_KEY がありません。--api-key か環境変数を設定してください。(.env も可)")
+
+    client = OpenAI(api_key=key)
+
+    # データ形式を文字列に変換
+    if isinstance(data, pd.DataFrame):
+        data_str = data.to_markdown(index=True)
+    elif isinstance(data, dict):
+        data_str = json.dumps(data, indent=2)
+    else:
+        data_str = str(data)
+
+    system_hint = (
+        "あなたはデータ分析の専門家です。提供された数値データを分析し、人間が理解しやすい言葉で説明してください。"
+        "特に重要なポイントや傾向を強調し、Markdown形式で出力してください。"
+    )
+
+    user_prompt = f"以下の数値データを分析し、その内容を説明してください。\n\n---\n{data_str}\n---"
+
+    def _run():
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_hint},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.3,
+        )
+        return resp.choices[0].message.content.strip()
+
+    return with_retries(_run)

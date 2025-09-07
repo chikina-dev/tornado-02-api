@@ -61,6 +61,47 @@ def _call_llm_api(url: str, content: str) -> Optional[Dict[str, Any]]:
         print(f"- Error during OpenAI API call for {url}: {e}")
         return None
 
+def evaluate_text_content_with_llm(content: str, api_key: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """
+    テキストコンテンツをLLMで評価し、構造化されたJSONを返す関数。
+    """
+    if not OpenAI or not content:
+        return None
+    try:
+        client = OpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
+        truncated_content = content[:12000]
+
+        prompt = f"""
+        Analyze the web page content and return a JSON object with three keys:
+        1. "difficulty_score": A float from 1.0 (beginner) to 5.0 (expert).
+        2. "specialization_level": A string, one of "summary", "general", or "specialized".
+        3. "skill_categories": A list of 1-3 short, descriptive, and general skill tags (e.g., ["Python", "Asyncio"], ["Music Theory", "Jazz Harmony"]).
+
+        CONTENT: {truncated_content}
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4-turbo-preview",
+            response_format={ "type": "json_object" },
+            messages=[
+                {"role": "system", "content": "You are an expert analyst of web pages. Your response must be a valid JSON object."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.0,
+        )
+
+        llm_response = json.loads(response.choices[0].message.content)
+        
+        if all(k in llm_response for k in ["difficulty_score", "specialization_level", "skill_categories"]):
+            llm_response['skill_categories'] = [tag.lower().replace(' ', '_') for tag in llm_response['skill_categories']]
+            return llm_response
+        else:
+            return None
+
+    except Exception as e:
+        print(f"- Error during OpenAI API call: {e}")
+        return None
+
 def _fetch_and_evaluate_url(url: str) -> Tuple[str, Optional[Dict[str, Any]]]:
     """Worker function to fetch content and evaluate a single URL."""
     try:
