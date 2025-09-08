@@ -2,8 +2,13 @@
 
 import os
 import shutil
+from pathlib import Path as FilePath
+from typing import List
 
+import aiofiles
 from fastapi import APIRouter, Depends, File, HTTPException, Path, UploadFile, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from database import database
 from dependencies import get_current_user
@@ -19,7 +24,7 @@ from models import (
 )
 from utils.datetime_utils import as_naive_utc, naive_utc_now
 
-UPLOAD_DIR = os.path.join(os.getcwd(), "uploaded_files")
+UPLOAD_DIR = FilePath("uploaded_files")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 router = APIRouter(tags=["upload"])
@@ -54,52 +59,40 @@ async def upload_history(
     history_id = await database.execute(search_histories.insert().values(**values))
     return UploadHistoryResponse(history_id=history_id)
 
-@router.post(
-    "/upload/file/{user_id}",
-    response_model=WebhookUploadFileResponse,
-    operation_id="uploadFileByUserId",
-)
-async def webhook_file_upload(request: Request, user_id: int = Path(...)):
-    ct = request.headers.get("content-type", "").lower()
-    upload_obj: UploadFile | None = None
-    raw: bytes | None = None
-    now = naive_utc_now()
-    print(raw)
+class WebhookUploadFileResponseItem(BaseModel):
+    filename: str
+    size: int
+    content_preview: str
 
-    # 保存用のパス
-    def build_saved_path(filename: str) -> str:
-        safe_name = filename or "upload.bin"
-        return os.path.join(UPLOAD_DIR, f"{now.timestamp()}_{safe_name}")
+@router.post("/upload/file/{user_id}")
+async def upload_files_inspect(request: Request, user_id: int = Path(...)):
+    form = await request.form()  # multipart/form-dataを取得
+    keys = list(form.keys())     # 送信されたすべてのフィールド名
+    files_info = []
 
-    if ct.startswith("multipart/form-data"):
-        form = await request.form()
-        for key, val in form.items():
-            if isinstance(val, UploadFile):
-                upload_obj = val
-                break
-        if upload_obj is None:
-            raise HTTPException(status_code=422, detail="No file in multipart form data")
+    for key, value in form.items():
+        if hasattr(value, "filename"):  # UploadFileかどうかチェック
+            file_content = await value.read()
+            
+            # 保存するパスを生成
+            save_path = UPLOAD_DIR / f"{user_id}_{value.filename}"
+            
+            # 非同期でファイルを書き込み
+        async with aiofiles.open(save_path, "wb") as f:
+            await f.write(file_content)
+            
+        files_info.append({
+            "field_name": key,
+            "filename": value.filename,
+            "size": len(file_content),
+            "saved_path": str(save_path)
+        })
+    
+    print(f"Received files for user_id={user_id}: {files_info}")
 
-        saved_path = build_saved_path(upload_obj.filename)
-        with open(saved_path, "wb") as f:
-            shutil.copyfileobj(upload_obj.file, f)
-        external_id = upload_obj.filename
-
-    else:
-        raw = await request.body()
-        if not raw:
-            raise HTTPException(status_code=422, detail="Empty request body")
-        filename = request.headers.get("x-filename") or request.headers.get("x-file-name") or "upload.bin"
-        saved_path = build_saved_path(filename)
-        with open(saved_path, "wb") as f:
-            f.write(raw)
-        external_id = filename
-
-    # DB 反映はそのまま
-    file_id = await database.execute(
-        files.insert().values(user_id=user_id, file_path=saved_path, created_at=now)
-    )
-    await database.execute(
-        file_upload_webhooks.insert().values(user_id=user_id, external_id=external_id, created_at=now)
-    )
-    return WebhookUploadFileResponse(file_id=file_id, saved=True)
+    return JSONResponse({
+        "user_id": user_id,
+        "keys_received": keys,
+        "files_info": files_info,
+        "message": f"{len(files_info)} file(s) uploaded successfully"
+    })
